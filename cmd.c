@@ -984,9 +984,10 @@ usage(char *argv[], int rc)
 	fprintf(out,
 	    "Usage: %s [OPTIONS] <dataset> [<parent_snapshot>] <snapshot>\n"
 	    "\n"
-	    "\t-h\tThis help message\n"
-	    "\t-t\tPrint details about the archive that would be created\n"
-	    "\t\twithout creating the archive itself\n"
+	    "   -h        This help message\n"
+	    "   -t        Print details about the archive that would be created\n"
+	    "             without creating the archive itself\n"
+	    "   -f FILE   Output tarball name.  Without -f, output is to stdout.\n"
 	    "\n",
 	    basename(argv[0]));
 
