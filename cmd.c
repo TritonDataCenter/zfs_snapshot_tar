@@ -14,8 +14,8 @@
 #include <sys/debug.h>
 #include <sys/list.h>
 #include <sys/stat.h>
-#include <ftw.h>
 #include <dirent.h>
+#include <sys/param.h>
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -26,12 +26,6 @@
 
 #define	CMD_ZFS		"/sbin/zfs"
 
-typedef enum diff_ent_flags {
-	DE_F_COMPLETE = 0x01,
-	DE_F_WHITEOUT = 0x02,
-	DE_F_FILE = 0x04,
-} diff_ent_flags_t;
-
 typedef struct diff_ent diff_ent_t;
 
 struct diff_ent {
@@ -40,12 +34,12 @@ struct diff_ent {
 	diff_ent_t *de_sibling;
 	diff_ent_t *de_child;
 	diff_ent_t *de_parent;
-
-	diff_ent_flags_t de_flags;
 };
 
 typedef enum snaptar_flags {
 	SNTR_F_FAILED = 0x01,
+	SNTR_F_IGNORE_SPECIALS = 0x02,
+	SNTR_F_IGNORE_UNKNOWNS = 0x04,
 } snaptar_flags_t;
 
 typedef struct {
@@ -66,7 +60,8 @@ typedef struct {
 	struct archive_entry *st_archive_entry;
 } snaptar_t;
 
-typedef int ent_enum_cb(snaptar_t *, const char *, int, struct stat *);
+typedef int ent_enum_cb(snaptar_t *, const char *, int, struct stat *,
+    const char *);
 typedef int walk_dir_func(snaptar_t *, ent_enum_cb *);
 
 void
@@ -155,6 +150,7 @@ snaptar_init(snaptar_t **stp, char *errbuf, size_t errlen,
 	}
 
 	st->st_snapshot_fd = -1;
+	st->st_flags |= SNTR_F_IGNORE_SPECIALS;
 
 	*stp = st;
 	custr_free(errstr);
@@ -383,10 +379,6 @@ run_zfs_diff_cb(const char *line, void *arg0)
 		errx(1, "unknown change type \"%s\"", strlist_get(sl, 0));
 	}
 
-#if 0
-	fprintf(stderr, "\n");
-#endif
-
 	strlist_free(sl);
 }
 
@@ -429,32 +421,6 @@ run_zfs_diff(snaptar_t *st)
 }
 
 static int
-cb_nftw(const char *path, const struct stat *stb, int flag, struct FTW *ftw)
-{
-	fprintf(stderr, "cb_nftw: [%d] %s\n", ftw->level, path);
-	return (0);
-}
-
-int
-run_ftw(snaptar_t *st)
-{
-	char *fullpath;
-
-	if (asprintf(&fullpath, "%s/.zfs/snapshot/%s", st->st_mountpoint,
-	    st->st_snap1) < 0) {
-		err(1, "asprintf");
-	}
-
-	if (nftw(fullpath, cb_nftw, 0, FTW_MOUNT | FTW_PHYS) != 0) {
-		err(1, "nftw");
-	}
-
-	free(fullpath);
-
-	return (0);
-}
-
-static int
 run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
     ent_enum_cb *cbfunc)
 {
@@ -471,6 +437,8 @@ run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
 		struct stat stb;
 		int chdirfd;
 		char *path;
+		char buf[MAXPATHLEN];
+		char *sympath = NULL;
 
 		if (strcmp(d->d_name, ".") == 0 ||
 		    strcmp(d->d_name, "..") == 0) {
@@ -487,10 +455,22 @@ run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
 			err(1, "fstatat");
 		}
 
+		if (S_ISLNK(stb.st_mode)) {
+			ssize_t sz;
+
+			if ((sz = readlinkat(st->st_snapshot_fd, path, buf,
+			    sizeof (buf))) < 0) {
+				err(1, "readlinkat");
+			}
+			buf[sz] = '\0';
+
+			sympath = buf;
+		}
+
 		/*
 		 * Fire callback for this directory entry.
 		 */
-		if (cbfunc(st, path, level, &stb) != 0) {
+		if (cbfunc(st, path, level, &stb, sympath) != 0) {
 			e = errno;
 			goto out;
 		}
@@ -527,10 +507,13 @@ out:
 }
 
 static int
-print_entry(snaptar_t *st, const char *path, int level, struct stat *stp)
+print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
+    const char *sympath)
 {
 	char *whpath = NULL;
 	char typ = '?';
+	boolean_t special = B_FALSE;
+	boolean_t unknown = B_FALSE;
 
 	if (stp == NULL) {
 		whiteout_path(path, &whpath);
@@ -543,9 +526,54 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp)
 	} else if (S_ISDIR(stp->st_mode)) {
 		typ = 'D';
 
+	} else if (S_ISLNK(stp->st_mode)) {
+		typ = 'L';
+
+	} else if (S_ISSOCK(stp->st_mode)) {
+		typ = 'S';
+
+	} else if (S_ISFIFO(stp->st_mode)) {
+		typ = 'P';
+
+	} else if (S_ISCHR(stp->st_mode)) {
+		typ = 'C';
+		special = B_TRUE;
+
+	} else if (S_ISBLK(stp->st_mode)) {
+		typ = 'B';
+		special = B_TRUE;
+
+	} else if (S_ISDOOR(stp->st_mode)) {
+		typ = 'O';
+		special = B_TRUE;
+
+	} else if (S_ISPORT(stp->st_mode)) {
+		typ = 'V';
+		special = B_TRUE;
+
+	} else {
+		typ = '?';
+		unknown = B_TRUE;
 	}
 
-	fprintf(stderr, "[%d] %c %s\n", level, typ, path);
+
+	fprintf(stderr, "%c %s", typ, path);
+	if (sympath != NULL) {
+		fprintf(stderr, " -> %s", sympath);
+	}
+	if ((special && (st->st_flags & SNTR_F_IGNORE_SPECIALS)) ||
+	    (unknown && (st->st_flags & SNTR_F_IGNORE_UNKNOWNS))) {
+		fprintf(stderr, " (ignored)");
+	}
+	fprintf(stderr, "\n");
+
+	if (special && !(st->st_flags & SNTR_F_IGNORE_SPECIALS)) {
+		errx(1, "found special file type; aborting");
+	}
+
+	if (unknown && !(st->st_flags & SNTR_F_IGNORE_UNKNOWNS)) {
+		errx(1, "found unknown file type; aborting");
+	}
 
 	free(whpath);
 	return (0);
@@ -700,7 +728,7 @@ get_zfs_mountpoint(snaptar_t *st)
 
 static int
 make_tarball_entry(snaptar_t *st, const char *path, int level,
-    struct stat *statp)
+    struct stat *statp, const char *sympath)
 {
 	struct archive *a = st->st_archive;
 	struct archive_entry *ae = st->st_archive_entry;
@@ -725,40 +753,64 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		archive_entry_set_filetype(ae, AE_IFREG);
 		archive_entry_set_perm(ae, 0444);
 
-	} else if (S_ISDIR(statp->st_mode)) {
+	} else if (S_ISLNK(statp->st_mode) || S_ISDIR(statp->st_mode) ||
+	    S_ISREG(statp->st_mode) || S_ISFIFO(statp->st_mode) ||
+	    S_ISSOCK(statp->st_mode)) {
 		/*
-		 * This is a directory.
+		 * This is a regular file, directory, symbolic link, fifo or
+		 * socket.  Metadata is copied from the stat(2) structure.
 		 */
 		archive_entry_set_pathname(ae, path);
 		archive_entry_copy_stat(ae, statp);
 
-	} else if (S_ISREG(statp->st_mode)) {
-		/*
-		 * This is a regular file.  Open a file descriptor from which
-		 * to read the data.
-		 */
-		archive_entry_set_pathname(ae, path);
-		archive_entry_copy_stat(ae, statp);
+		if (S_ISREG(statp->st_mode)) {
+			/*
+			 * Open the regular file from the snapshot so that we
+			 * can read its contents into the archive.
+			 */
+			if ((datafd = openat(st->st_snapshot_fd, path,
+			    O_RDONLY | O_LARGEFILE | O_NOFOLLOW)) == -1) {
+				err(1, "open(%s)", path);
+			}
 
-		if ((datafd = openat(st->st_snapshot_fd, path, O_RDONLY |
-		    O_LARGEFILE | O_NOFOLLOW)) == -1) {
-			err(1, "open(%s)", path);
+		} else if (S_ISLNK(statp->st_mode)) {
+			/*
+			 * Specify the symbolic link target path.
+			 */
+			archive_entry_set_symlink(ae, sympath);
 		}
+
+	} else if (S_ISCHR(statp->st_mode) || S_ISBLK(statp->st_mode) ||
+	    S_ISDOOR(statp->st_mode) || S_ISPORT(statp->st_mode)) {
+		/*
+		 * These are special files: block and character devices, event
+		 * ports and doors.  Either we have been told to ignore these
+		 * special files, or we should fail archive creation now.
+		 */
+		if (st->st_flags & SNTR_F_IGNORE_SPECIALS) {
+			goto skip;
+		}
+
+		errx(1, "found a %s in snapshot; cannot represent",
+		    S_ISCHR(statp->st_mode) ? "character device" :
+		    S_ISBLK(statp->st_mode) ? "block device" :
+		    S_ISDOOR(statp->st_mode) ? "door" :
+		    S_ISPORT(statp->st_mode) ? "port" :
+		    "file of unknown type");
 
 	} else {
 		/*
-		 * XXX This file type is unknown.
+		 * This file type is unknown.
 		 */
-		errx(1, "unknown file type: %x", (int)(statp->st_mode &
-		    S_IFMT));
+		warnx("unknown file type: %x", (int)(statp->st_mode & S_IFMT));
+		abort();
 	}
 
 	/*
 	 * Write archive header:
 	 */
 	if (archive_write_header(a, ae) != ARCHIVE_OK) {
-		errx(1, "archive_write_header: %s",
-		    archive_error_string(a));
+		errx(1, "archive_write_header: %s", archive_error_string(a));
 	}
 
 	if (datafd != -1) {
@@ -792,12 +844,13 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		    archive_error_string(a));
 	}
 
+skip:
 	free(whpath);
 	return (0);
 }
 
 static int
-make_tarball(snaptar_t *st, walk_dir_func *walker, const char *output)
+make_tarball(snaptar_t *st, walk_dir_func *walker, const char *output_file)
 {
 	struct archive *a;
 	struct archive_entry *ae;
@@ -813,8 +866,8 @@ make_tarball(snaptar_t *st, walk_dir_func *walker, const char *output)
 		    archive_error_string(a));
 	}
 
-	if (output != NULL) {
-		if (archive_write_open_filename(a, "output.tar") !=
+	if (output_file != NULL) {
+		if (archive_write_open_filename(a, output_file) !=
 		    ARCHIVE_OK) {
 			errx(1, "archive_write_open_filename: %s",
 			    archive_error_string(a));
@@ -826,7 +879,6 @@ make_tarball(snaptar_t *st, walk_dir_func *walker, const char *output)
 		}
 	}
 
-	fprintf(stderr, "PROCESSING...\n");
 	st->st_archive = a;
 	st->st_archive_entry = ae;
 	if (walker(st, make_tarball_entry) != 0) {
@@ -857,6 +909,8 @@ walk_diff_tree_impl(snaptar_t *st, diff_ent_t *de, int level,
 	struct stat stb;
 	struct stat *stp = &stb;
 	char *path = NULL;
+	char buf[MAXPATHLEN];
+	char *sympath = NULL;
 
 	if (root) {
 		/*
@@ -886,7 +940,20 @@ walk_diff_tree_impl(snaptar_t *st, diff_ent_t *de, int level,
 		stp = NULL;
 	}
 
-	if (cbfunc(st, path, level, stp) != 0) {
+	if (S_ISLNK(stb.st_mode)) {
+		ssize_t sz;
+
+		if ((sz = readlinkat(st->st_snapshot_fd, path, buf,
+		    sizeof (buf))) < 0) {
+			err(1, "readlinkat");
+		}
+
+		buf[sz] = '\0';
+
+		sympath = buf;
+	}
+
+	if (cbfunc(st, path, level, stp, sympath) != 0) {
 		free(path);
 		return (-1);
 	}
@@ -909,13 +976,21 @@ walk_diff_tree(snaptar_t *st, ent_enum_cb *cbfunc)
 	return (walk_diff_tree_impl(st, &st->st_root, 0, NULL, cbfunc));
 }
 
-void
-maybe_abort(snaptar_t *st)
+static void
+usage(char *argv[], int rc)
 {
-	st = st;
-	if (getenv("ABORT") != NULL) {
-		abort();
-	}
+	FILE *out = rc == 0 ? stdout : stderr;
+
+	fprintf(out,
+	    "Usage: %s [OPTIONS] <dataset> [<parent_snapshot>] <snapshot>\n"
+	    "\n"
+	    "\t-h\tThis help message\n"
+	    "\t-t\tPrint details about the archive that would be created\n"
+	    "\t\twithout creating the archive itself\n"
+	    "\n",
+	    basename(argv[0]));
+
+	exit(rc);
 }
 
 int
@@ -926,20 +1001,49 @@ main(int argc, char *argv[])
 	int rv;
 	boolean_t incremental;
 	walk_dir_func *walker;
+	int c;
+	boolean_t just_print = B_FALSE;
+	const char *output_file = NULL;
 
-	if (argc == 3) {
-		rv = snaptar_init(&st, errbuf, sizeof (errbuf), argv[1],
-		    NULL, argv[2]);
+	while ((c = getopt(argc, argv, ":htf:")) != -1) {
+		switch (c) {
+		case 'h':
+			usage(argv, 0);
+			break;
+
+		case 't':
+			just_print = B_TRUE;
+			break;
+
+		case 'f':
+			output_file = optarg;
+			break;
+
+		case ':':
+			warnx("Option -%c requires an operand", optopt);
+			usage(argv, 1);
+			break;
+
+		case '?':
+			warnx("Unrecognised option: %-c", optopt);
+			usage(argv, 1);
+			break;
+		}
+	}
+
+	if ((argc - optind) == 2) {
+		rv = snaptar_init(&st, errbuf, sizeof (errbuf), argv[optind],
+		    NULL, argv[optind + 1]);
 		incremental = B_FALSE;
 
-	} else if (argc == 4) {
-		rv = snaptar_init(&st, errbuf, sizeof (errbuf), argv[1],
-		    argv[2], argv[3]);
+	} else if ((argc - optind) == 3) {
+		rv = snaptar_init(&st, errbuf, sizeof (errbuf), argv[optind],
+		    argv[optind + 1], argv[optind + 2]);
 		incremental = B_TRUE;
 
 	} else {
-		errx(1, "usage: %s <dataset> [<parent_snapshot>] <snapshot>",
-		    argv[0]);
+		warnx("This program requires 2 or 3 positional arguments.");
+		usage(argv, 1);
 	}
 
 	if (rv != 0) {
@@ -960,20 +1064,15 @@ main(int argc, char *argv[])
 		walker = run_readdir;
 	}
 
-	if (getenv("JUST_PRINT") != NULL) {
+	if (just_print) {
 		if (walker(st, print_entry) != 0) {
 			goto out;
 		}
 	} else {
-		if (make_tarball(st, walker, NULL) != 0) {
+		if (make_tarball(st, walker, output_file) != 0) {
 			goto out;
 		}
 	}
-
-	fprintf(stderr, "DUMP:\n");
-	fprintf(stderr, "\n");
-
-	maybe_abort(st);
 
 out:
 	snaptar_fini(st);
