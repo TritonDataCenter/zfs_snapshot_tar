@@ -3,7 +3,7 @@ TOOLS_PROTO =		/ws/plat/projects/illumos/usr/src/tools/proto/root_i386-nd
 CTFMERGE =		$(TOOLS_PROTO)/opt/onbld/bin/i386/ctfmerge-altexec
 CTFCONVERT =		$(TOOLS_PROTO)/opt/onbld/bin/i386/ctfconvert-altexec
 
-PROG =			snaptar
+PROG =			zfs_snapshot_tar
 
 OBJ =			cmd.o pipe_stream.o run_command.o custr.o list.o strlist.o avl.o
 

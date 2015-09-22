@@ -93,10 +93,6 @@ whiteout_path(const char *path, char **outp)
 		err(1, "asprintf");
 	}
 
-#if 0
-	fprintf(stderr, "WHITEOUT: %s/.wh.%s\n", dirn, basen);
-#endif
-
 	free(tmp0);
 	free(tmp1);
 
@@ -176,13 +172,6 @@ snaptar_fini(snaptar_t *st)
 	if (st->st_snapshot_fd != -1) {
 		VERIFY0(close(st->st_snapshot_fd));
 	}
-
-#if 0
-	while ((de = avl_destroy_nodes(&st->st_paths, &cookie)) != NULL) {
-		free(de->de_path);
-		free(de);
-	}
-#endif
 
 	free(st->st_dataset);
 	free(st->st_snap0);
@@ -367,13 +356,6 @@ run_zfs_diff_cb(const char *line, void *arg0)
 		err(1, "split_on");
 	}
 
-#if 0
-	fprintf(stderr, "LINE: elems %d\n", strlist_contig_count(sl));
-	for (unsigned int i = 0; i < strlist_contig_count(sl); i++) {
-		fprintf(stderr, "\t[%d] \"%s\"\n", i, strlist_get(sl, i));
-	}
-#endif
-
 	if (strlist_match(sl, 0, "-") ||
 	    strlist_match(sl, 0, "+") ||
 	    strlist_match(sl, 0, "M")) {
@@ -526,7 +508,8 @@ run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
 			err(1, "openat");
 		}
 
-		if (run_readdir_impl(st, chdirfd, level + 1, path, cbfunc) != 0) {
+		if (run_readdir_impl(st, chdirfd, level + 1, path,
+		    cbfunc) != 0) {
 			e = errno;
 			goto out;
 		}
@@ -544,7 +527,7 @@ out:
 }
 
 static int
-run_readdir_cb(snaptar_t *st, const char *path, int level, struct stat *stp)
+print_entry(snaptar_t *st, const char *path, int level, struct stat *stp)
 {
 	char *whpath = NULL;
 	char typ = '?';
@@ -553,10 +536,13 @@ run_readdir_cb(snaptar_t *st, const char *path, int level, struct stat *stp)
 		whiteout_path(path, &whpath);
 		path = whpath;
 		typ = '-';
+
 	} else if (S_ISREG(stp->st_mode)) {
 		typ = 'F';
+
 	} else if (S_ISDIR(stp->st_mode)) {
 		typ = 'D';
+
 	}
 
 	fprintf(stderr, "[%d] %c %s\n", level, typ, path);
@@ -566,7 +552,7 @@ run_readdir_cb(snaptar_t *st, const char *path, int level, struct stat *stp)
 }
 
 int
-run_readdir(snaptar_t *st)
+run_readdir(snaptar_t *st, ent_enum_cb *cbfunc)
 {
 	int dirfd;
 	int ret;
@@ -576,7 +562,7 @@ run_readdir(snaptar_t *st)
 		err(1, "openat");
 	}
 
-	ret = run_readdir_impl(st, dirfd, 1, NULL, run_readdir_cb);
+	ret = run_readdir_impl(st, dirfd, 1, NULL, cbfunc);
 
 	return (ret);
 }
@@ -607,14 +593,6 @@ get_zfs_mountpoint_cb(const char *line, void *arg0)
 
 	if (split_on(line, '\t', sl) != 0) {
 		err(1, "split_on");
-	}
-
-	if (getenv("DEBUG") != NULL) {
-		fprintf(stderr, "\tget_zfs_mountpoint_cb():\n");
-		for (unsigned int i = 0; i < strlist_contig_count(sl); i++) {
-			fprintf(stderr, "\t\t[%d] \"%s\"\n", i, strlist_get(sl, i));
-		}
-		fprintf(stderr, "\n");
 	}
 
 	/*
@@ -721,7 +699,8 @@ get_zfs_mountpoint(snaptar_t *st)
 }
 
 static int
-make_tarball_entry(snaptar_t *st, const char *path, int level, struct stat *stp)
+make_tarball_entry(snaptar_t *st, const char *path, int level,
+    struct stat *statp)
 {
 	struct archive *a = st->st_archive;
 	struct archive_entry *ae = st->st_archive_entry;
@@ -799,7 +778,8 @@ make_tarball_entry(snaptar_t *st, const char *path, int level, struct stat *stp)
 				break;
 			}
 
-			if ((wsz = archive_write_data(a, readbuf, rsz)) != rsz) {
+			if ((wsz = archive_write_data(a, readbuf, rsz)) !=
+			    rsz) {
 				errx(1, "wsz (%d) != rsz (%d)", wsz, rsz);
 			}
 		}
@@ -817,7 +797,7 @@ make_tarball_entry(snaptar_t *st, const char *path, int level, struct stat *stp)
 }
 
 static int
-make_tarball(snaptar_t *st, walk_dir_func *walker)
+make_tarball(snaptar_t *st, walk_dir_func *walker, const char *output)
 {
 	struct archive *a;
 	struct archive_entry *ae;
@@ -833,12 +813,22 @@ make_tarball(snaptar_t *st, walk_dir_func *walker)
 		    archive_error_string(a));
 	}
 
-	if (archive_write_open_filename(a, "output.tar") != ARCHIVE_OK) {
-		errx(1, "archive_write_open_filename: %s",
-		    archive_error_string(a));
+	if (output != NULL) {
+		if (archive_write_open_filename(a, "output.tar") !=
+		    ARCHIVE_OK) {
+			errx(1, "archive_write_open_filename: %s",
+			    archive_error_string(a));
+		}
+	} else {
+		if (archive_write_open_FILE(a, stdout) != ARCHIVE_OK) {
+			errx(1, "archive_write_open_FILE: %s",
+			    archive_error_string(a));
+		}
 	}
 
 	fprintf(stderr, "PROCESSING...\n");
+	st->st_archive = a;
+	st->st_archive_entry = ae;
 	if (walker(st, make_tarball_entry) != 0) {
 		ret = -1;
 		goto out;
@@ -853,8 +843,10 @@ make_tarball(snaptar_t *st, walk_dir_func *walker)
 out:
 	archive_entry_free(ae);
 	archive_write_free(a);
+	st->st_archive = NULL;
+	st->st_archive_entry = NULL;
 
-	return (0);
+	return (ret);
 }
 
 static int
@@ -912,9 +904,9 @@ skip:
 }
 
 int
-walk_diff_tree(snaptar_t *st)
+walk_diff_tree(snaptar_t *st, ent_enum_cb *cbfunc)
 {
-	return (walk_diff_tree_impl(st, &st->st_root, 0, NULL, run_readdir_cb));
+	return (walk_diff_tree_impl(st, &st->st_root, 0, NULL, cbfunc));
 }
 
 void
@@ -933,9 +925,7 @@ main(int argc, char *argv[])
 	snaptar_t *st;
 	int rv;
 	boolean_t incremental;
-
-	if (argc < 3 || argc > 4) {
-	}
+	walk_dir_func *walker;
 
 	if (argc == 3) {
 		rv = snaptar_init(&st, errbuf, sizeof (errbuf), argv[1],
@@ -965,11 +955,17 @@ main(int argc, char *argv[])
 			goto out;
 		}
 
-		if (walk_diff_tree(st) != 0) {
+		walker = walk_diff_tree;
+	} else {
+		walker = run_readdir;
+	}
+
+	if (getenv("JUST_PRINT") != NULL) {
+		if (walker(st, print_entry) != 0) {
 			goto out;
 		}
 	} else {
-		if (run_readdir(st) != 0) {
+		if (make_tarball(st, walker, NULL) != 0) {
 			goto out;
 		}
 	}
@@ -978,12 +974,6 @@ main(int argc, char *argv[])
 	fprintf(stderr, "\n");
 
 	maybe_abort(st);
-
-#if 0
-	if (make_tarball(st) != 0) {
-		goto out;
-	}
-#endif
 
 out:
 	snaptar_fini(st);
