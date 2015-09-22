@@ -1,0 +1,149 @@
+libarchive/archive_options.lo: libarchive/archive_options.c \
+ libarchive/archive_platform.h config.h /usr/include/inttypes.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/feature_tests.h \
+ /usr/include/sys/ccompile.h /usr/include/sys/isa_defs.h \
+ /usr/include/sys/inttypes.h /usr/include/sys/int_types.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_limits.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_const.h \
+ /usr/include/sys/int_fmtio.h /usr/include/sys/stdint.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stdint.h \
+ /usr/include/stdint.h libarchive/archive_options_private.h \
+ libarchive/archive_private.h libarchive/archive.h \
+ /usr/include/sys/stat.h /usr/include/sys/types.h \
+ /usr/include/sys/machtypes.h /usr/include/ia32/sys/machtypes.h \
+ /usr/include/sys/select.h /usr/include/sys/time_impl.h \
+ /usr/include/sys/time.h /usr/include/time.h /usr/include/iso/time_iso.h \
+ /usr/include/sys/stat_impl.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stddef.h \
+ /usr/include/stdio.h /usr/include/iso/stdio_iso.h \
+ /usr/include/sys/va_list.h /usr/include/stdio_tag.h \
+ /usr/include/stdio_impl.h /usr/include/iso/stdio_c99.h \
+ /usr/include/unistd.h /usr/include/sys/unistd.h \
+ libarchive/archive_string.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stdarg.h \
+ /usr/include/stdlib.h /usr/include/iso/stdlib_iso.h \
+ /usr/include/iso/stdlib_c99.h /usr/include/sys/wait.h \
+ /usr/include/sys/resource.h /usr/include/sys/siginfo.h \
+ /usr/include/sys/machsig.h /usr/include/vm/faultcode.h \
+ /usr/include/sys/procset.h /usr/include/sys/signal.h \
+ /usr/include/sys/iso/signal_iso.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/string.h \
+ /usr/include/iso/string_iso.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/wchar.h \
+ /usr/include/iso/wchar_iso.h /usr/include/wchar_impl.h \
+ /usr/include/ctype.h /usr/include/iso/ctype_iso.h \
+ /usr/include/iso/wchar_c99.h
+
+libarchive/archive_platform.h:
+
+config.h:
+
+/usr/include/inttypes.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/feature_tests.h:
+
+/usr/include/sys/ccompile.h:
+
+/usr/include/sys/isa_defs.h:
+
+/usr/include/sys/inttypes.h:
+
+/usr/include/sys/int_types.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_limits.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_const.h:
+
+/usr/include/sys/int_fmtio.h:
+
+/usr/include/sys/stdint.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stdint.h:
+
+/usr/include/stdint.h:
+
+libarchive/archive_options_private.h:
+
+libarchive/archive_private.h:
+
+libarchive/archive.h:
+
+/usr/include/sys/stat.h:
+
+/usr/include/sys/types.h:
+
+/usr/include/sys/machtypes.h:
+
+/usr/include/ia32/sys/machtypes.h:
+
+/usr/include/sys/select.h:
+
+/usr/include/sys/time_impl.h:
+
+/usr/include/sys/time.h:
+
+/usr/include/time.h:
+
+/usr/include/iso/time_iso.h:
+
+/usr/include/sys/stat_impl.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stddef.h:
+
+/usr/include/stdio.h:
+
+/usr/include/iso/stdio_iso.h:
+
+/usr/include/sys/va_list.h:
+
+/usr/include/stdio_tag.h:
+
+/usr/include/stdio_impl.h:
+
+/usr/include/iso/stdio_c99.h:
+
+/usr/include/unistd.h:
+
+/usr/include/sys/unistd.h:
+
+libarchive/archive_string.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stdarg.h:
+
+/usr/include/stdlib.h:
+
+/usr/include/iso/stdlib_iso.h:
+
+/usr/include/iso/stdlib_c99.h:
+
+/usr/include/sys/wait.h:
+
+/usr/include/sys/resource.h:
+
+/usr/include/sys/siginfo.h:
+
+/usr/include/sys/machsig.h:
+
+/usr/include/vm/faultcode.h:
+
+/usr/include/sys/procset.h:
+
+/usr/include/sys/signal.h:
+
+/usr/include/sys/iso/signal_iso.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/string.h:
+
+/usr/include/iso/string_iso.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/wchar.h:
+
+/usr/include/iso/wchar_iso.h:
+
+/usr/include/wchar_impl.h:
+
+/usr/include/ctype.h:
+
+/usr/include/iso/ctype_iso.h:
+
+/usr/include/iso/wchar_c99.h:

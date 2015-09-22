@@ -1,0 +1,44 @@
+libarchive/archive_rb.lo: libarchive/archive_rb.c \
+ libarchive/archive_platform.h config.h /usr/include/inttypes.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/feature_tests.h \
+ /usr/include/sys/ccompile.h /usr/include/sys/isa_defs.h \
+ /usr/include/sys/inttypes.h /usr/include/sys/int_types.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_limits.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_const.h \
+ /usr/include/sys/int_fmtio.h /usr/include/sys/stdint.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stdint.h \
+ /usr/include/stdint.h \
+ /opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stddef.h \
+ libarchive/archive_rb.h
+
+libarchive/archive_platform.h:
+
+config.h:
+
+/usr/include/inttypes.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/feature_tests.h:
+
+/usr/include/sys/ccompile.h:
+
+/usr/include/sys/isa_defs.h:
+
+/usr/include/sys/inttypes.h:
+
+/usr/include/sys/int_types.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_limits.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include-fixed/sys/int_const.h:
+
+/usr/include/sys/int_fmtio.h:
+
+/usr/include/sys/stdint.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stdint.h:
+
+/usr/include/stdint.h:
+
+/opt/local/gcc47/lib/gcc/i486-sun-solaris2.11/4.7.3/include/stddef.h:
+
+libarchive/archive_rb.h:
