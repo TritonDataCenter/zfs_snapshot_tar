@@ -3,6 +3,9 @@ TOOLS_PROTO =		/ws/plat/projects/illumos/usr/src/tools/proto/root_i386-nd
 CTFMERGE =		$(TOOLS_PROTO)/opt/onbld/bin/i386/ctfmerge-altexec
 CTFCONVERT =		$(TOOLS_PROTO)/opt/onbld/bin/i386/ctfconvert-altexec
 
+CC =			gcc
+STRIP =			/usr/bin/strip
+
 PROG =			zfs_snapshot_tar
 
 OBJ =			cmd.o pipe_stream.o run_command.o custr.o list.o strlist.o avl.o
@@ -19,18 +22,20 @@ CFLAGS =		-gdwarf-2 \
 
 LIBS =			deps/libarchive-3.1.2/.libs/libarchive.a
 
+
 $(PROG): $(OBJ:%=obj/%)
-	gcc $(CFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 	$(CTFCONVERT) -l $@ -o $@ $@
+	$(STRIP) -x $@
 
 obj/%.o: %.c | obj
-	gcc $(CFLAGS) -c -o $@ $^
+	$(CC) $(CFLAGS) -c -o $@ $^
 
 obj/%.o: deps/illumos/%.c | obj
-	gcc $(CFLAGS) -c -o $@ $^
+	$(CC) $(CFLAGS) -c -o $@ $^
 
 obj/%.o: deps/smartos/%.c | obj
-	gcc $(CFLAGS) -c -o $@ $^
+	$(CC) $(CFLAGS) -c -o $@ $^
 
 obj:
 	mkdir -p $@
