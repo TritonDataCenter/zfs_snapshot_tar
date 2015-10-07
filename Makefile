@@ -17,13 +17,13 @@ CFLAGS =		-gdwarf-2 \
 			-std=gnu99 \
 			-Ideps/illumos \
 			-Ideps/smartos \
-			-Ideps/libarchive-3.1.2/libarchive \
+			-Ideps/libarchive/libarchive \
 			-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
 
-LIBS =			deps/libarchive-3.1.2/.libs/libarchive.a
+LIBS =			deps/libarchive/.libs/libarchive.a
 
 
-$(PROG): $(OBJ:%=obj/%)
+$(PROG): $(OBJ:%=obj/%) $(LIBS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 	$(CTFCONVERT) -l $@ -o $@ $@
 	$(STRIP) -x $@
@@ -39,6 +39,9 @@ obj/%.o: deps/smartos/%.c | obj
 
 obj:
 	mkdir -p $@
+
+deps/libarchive/.libs/libarchive.a:
+	cd deps && $(MAKE) libarchive/.libs/libarchive.a
 
 clean:
 	-rm -f $(OBJ:%=obj/%)

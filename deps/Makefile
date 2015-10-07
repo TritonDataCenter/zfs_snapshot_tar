@@ -1,15 +1,14 @@
+all: libarchive/.libs/libarchive.a
 
+libarchive/configure: libarchive/configure.ac
+	cd libarchive && \
+	    autoreconf --install
 
-all:
-
-libarchive-3.1.2/configure: libarchive-3.1.2.tar.gz
-	gtar xfz libarchive-3.1.2.tar.gz
-
-libarchive-3.1.2/Makefile: libarchive-3.1.2/configure
-	cd libarchive-3.1.2 && \
+libarchive/Makefile: libarchive/configure
+	cd libarchive && \
 	    ./configure \
 	    --disable-silent-rules \
-	    --enable-shared=yes \
+	    --enable-shared=no \
 	    --enable-static=yes \
 	    --disable-bsdtar \
 	    --disable-bsdcpio \
@@ -26,8 +25,10 @@ libarchive-3.1.2/Makefile: libarchive-3.1.2/configure
 	    --without-expat  
 	test -f $@ && touch $@
 
-libarchive-3.1.2/.libs/libarchive.a: libarchive-3.1.2/Makefile
-	cd libarchive-3.1.2 && \
+libarchive/.libs/libarchive.a: libarchive/Makefile
+	cd libarchive && \
 	    make -j8
 	test -f $@ && touch $@
 
+clean:
+	cd libarchive && git clean -fxd
