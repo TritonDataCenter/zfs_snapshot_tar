@@ -46,4 +46,5 @@ deps/libarchive/.libs/libarchive.a:
 clean:
 	-rm -f $(OBJ:%=obj/%)
 	-rm -f $(PROG)
+	cd deps && $(MAKE) clean
 

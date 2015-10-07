@@ -42,13 +42,21 @@ typedef enum snaptar_flags {
 	SNTR_F_IGNORE_UNKNOWNS = 0x04,
 } snaptar_flags_t;
 
+typedef enum snaptar_param {
+	SNTR_P_ROOT_PREFIX = 1,
+	SNTR_P_SNAPSHOT_PARENT,
+	SNTR_P_SNAPSHOT,
+	SNTR_P_DATASET,
+} snaptar_param_t;
+
 typedef struct {
 	snaptar_flags_t st_flags;
 
+	char *st_root_prefix;
 	char *st_dataset;
 	char *st_snap0;
 	char *st_snap1;
-	
+
 	char *st_mountpoint;
 
 	diff_ent_t st_root;
@@ -70,8 +78,10 @@ whiteout_path(const char *path, char **outp)
 	char *out;
 
 	if (strchr(path, '/') == NULL) {
-		fprintf(stderr, "WHITEOUT: .wh.%s\n", path);
-		return;
+		if (asprintf(&out, ".wh.%s", path) < 0) {
+			err(1, "asprintf");
+		}
+		goto done;
 	}
 
 	char *tmp0 = NULL, *tmp1 = NULL;
@@ -91,6 +101,7 @@ whiteout_path(const char *path, char **outp)
 	free(tmp0);
 	free(tmp1);
 
+done:
 	*outp = out;
 }
 
@@ -113,53 +124,72 @@ make_fullsnap(const char *dataset, const char *snap, char **fullsnap)
 }
 
 int
-snaptar_init(snaptar_t **stp, char *errbuf, size_t errlen,
-    const char *dataset, const char *snap0, const char *snap1)
+snaptar_alloc(snaptar_t **stp)
 {
 	snaptar_t *st;
-	custr_t *errstr = NULL;
-	int e;
 
-	if (custr_alloc_buf(&errstr, errbuf, errlen) != 0) {
-		e = errno;
-		snprintf(errbuf, errlen, "custr_alloc_buf failure: %s",
-		    strerror(errno));
-		goto errout;
-	}
+	*stp = NULL;
 
 	if ((st = calloc(1, sizeof (*st))) == NULL) {
-		e = errno;
-		custr_append_printf(errstr, "calloc failure: %s",
-		    strerror(errno));
-		goto errout;
-	}
-
-	if ((st->st_snap1 = strdup(snap1)) == NULL ||
-	    (st->st_dataset = strdup(dataset)) == NULL) {
-		custr_append_printf(errstr, "strdup failure: %s",
-		    strerror(errno));
-		goto errout;
-	}
-
-	if (snap0 != NULL) {
-		if ((st->st_snap0 = strdup(snap0)) == NULL) {
-			custr_append_printf(errstr, "strdup failure: %s",
-			    strerror(errno));
-			goto errout;
-		}
+		return (-1);
 	}
 
 	st->st_snapshot_fd = -1;
 	st->st_flags |= SNTR_F_IGNORE_SPECIALS;
 
 	*stp = st;
-	custr_free(errstr);
 	return (0);
+}
 
-errout:
-	custr_free(errstr);
-	errno = e;
-	return (-1);
+static int
+copy_string(const char *src, char **dstp)
+{
+	char *dst;
+
+	if ((dst = strdup(src)) == NULL) {
+		return (-1);
+	}
+
+	if (*dstp != NULL) {
+		free(*dstp);
+	}
+	*dstp = dst;
+	return (0);
+}
+
+int
+snaptar_param_set(snaptar_t *st, snaptar_param_t p, const char *val)
+{
+	size_t len = strlen(val);
+
+	switch (p) {
+	case SNTR_P_ROOT_PREFIX:
+		if (len == 0) {
+			warnx("root prefix must be a non-empty string");
+			errno = EPROTO;
+			return (-1);
+		}
+		if (val[0] == '/' || val[len - 1] == '/') {
+			warnx("root prefix must not begin or end with a "
+			    "slash");
+			errno = EPROTO;
+			return (-1);
+		}
+		return (copy_string(val, &st->st_root_prefix));
+
+	case SNTR_P_DATASET:
+		return (copy_string(val, &st->st_dataset));
+
+	case SNTR_P_SNAPSHOT:
+		return (copy_string(val, &st->st_snap1));
+
+	case SNTR_P_SNAPSHOT_PARENT:
+		return (copy_string(val, &st->st_snap0));
+
+	default:
+		errno = EINVAL;
+		return (-1);
+	}
 }
 
 void
@@ -234,26 +264,48 @@ get_child(diff_ent_t *dir, const char *comp, diff_ent_t **child)
 }
 
 static int
-record_path(snaptar_t *st, const char *pfx, const char *path)
+record_path(snaptar_t *st, const char *path)
 {
 	strlist_t *sl = NULL;
 	custr_t *cu = NULL;
 	diff_ent_t *de = &st->st_root;
-	size_t start = 0;
+	const char *start = path;
 
 	if (strlist_alloc(&sl, 0) != 0 || custr_alloc(&cu) != 0) {
 		err(1, "strlist_alloc/custr_alloc");
 	}
 
-	if (pfx != NULL) {
-		size_t len = strlen(pfx);
+	if (st->st_mountpoint != NULL) {
+		size_t len = strlen(st->st_mountpoint);
 
-		if (strncmp(path, pfx, len) != 0) {
+		if (strncmp(start, st->st_mountpoint, len) != 0) {
 			errno = EINVAL;
 			return (-1);
 		}
 
-		start = len;
+		start += len;
+	}
+
+	while (start[0] == '/') {
+		start++;
+	}
+
+	if (st->st_root_prefix != NULL) {
+		char *x;
+		ssize_t len;
+		boolean_t match;
+
+		if ((len = asprintf(&x, "%s/", st->st_root_prefix)) < 0) {
+			err(1, "asprintf");
+		}
+
+		match = (strncmp(start, x, len) == 0);
+
+		free(x);
+
+		if (!match) {
+			return (0);
+		}
 	}
 
 	/*
@@ -261,7 +313,7 @@ record_path(snaptar_t *st, const char *pfx, const char *path)
 	 *   a/b/c/d/  -->   "a", "b", "c", "d"
 	 *   /e/f///g  -->   "e", "f", "g"
 	 */
-	for (const char *p = path + start; ; p++) {
+	for (const char *p = start; ; p++) {
 		if (*p != '\0' && *p != '/') {
 			if (custr_appendc(cu, *p) != 0) {
 				err(1, "custr_appendc");
@@ -362,7 +414,7 @@ run_zfs_diff_cb(const char *line, void *arg0)
 			errx(1, "unexpected count (wanted 3, got %d)",
 			    strlist_contig_count(sl));
 		}
-		VERIFY0(record_path(st, st->st_mountpoint, strlist_get(sl, 2)));
+		VERIFY0(record_path(st, strlist_get(sl, 2)));
 
 	} else if (strlist_match(sl, 0, "R")) {
 		/*
@@ -372,8 +424,8 @@ run_zfs_diff_cb(const char *line, void *arg0)
 			errx(1, "unexpected count (wanted 4, got %d)",
 			    strlist_contig_count(sl));
 		}
-		VERIFY0(record_path(st, st->st_mountpoint, strlist_get(sl, 2)));
-		VERIFY0(record_path(st, st->st_mountpoint, strlist_get(sl, 3)));
+		VERIFY0(record_path(st, strlist_get(sl, 2)));
+		VERIFY0(record_path(st, strlist_get(sl, 3)));
 
 	} else {
 		errx(1, "unknown change type \"%s\"", strlist_get(sl, 0));
@@ -556,7 +608,6 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 		unknown = B_TRUE;
 	}
 
-
 	fprintf(stderr, "%c %s", typ, path);
 	if (sympath != NULL) {
 		fprintf(stderr, " -> %s", sympath);
@@ -583,16 +634,29 @@ int
 run_readdir(snaptar_t *st, ent_enum_cb *cbfunc)
 {
 	int dirfd;
-	int ret;
+	struct stat stb;
+	const char *parent = NULL;
+	const char *pfx = ".";
 
-	if ((dirfd = openat(st->st_snapshot_fd, ".", O_RDONLY |
+	if (st->st_root_prefix != NULL) {
+		pfx = st->st_root_prefix;
+		parent = st->st_root_prefix;
+	};
+
+	if ((dirfd = openat(st->st_snapshot_fd, pfx, O_RDONLY |
 	    O_LARGEFILE)) == -1) {
 		err(1, "openat");
 	}
 
-	ret = run_readdir_impl(st, dirfd, 1, NULL, cbfunc);
+	if (fstat(dirfd, &stb) != 0) {
+		err(1, "fstat");
+	}
 
-	return (ret);
+	if (!S_ISDIR(stb.st_mode)) {
+		errx(1, "\"%s\" (within snapshot) is not a directory", pfx);
+	}
+
+	return (run_readdir_impl(st, dirfd, 1, parent, cbfunc));
 }
 
 void
@@ -648,6 +712,7 @@ get_zfs_mountpoint_cb(const char *line, void *arg0)
 		goto errout;
 	}
 
+	VERIFY(strlist_get(sl, 3)[0] == '/');
 	if ((st->st_mountpoint = strdup(strlist_get(sl, 3))) == NULL) {
 		err(1, "strdup");
 	}
@@ -672,7 +737,7 @@ open_zfs_snap(snaptar_t *st, const char *snapname)
 	}
 
 	if ((st->st_snapshot_fd = open(path, O_RDONLY | O_LARGEFILE)) == -1) {
-		err(1, "open(%s)", path);
+		err(1, "open_zfs_snap: open(%s)", path);
 	}
 
 	free(path);
@@ -734,9 +799,30 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 	struct archive_entry *ae = st->st_archive_entry;
 	char *whpath = NULL;
 	int datafd = -1;
+	const char *relpath = path;
 
 	VERIFY(a != NULL);
 	VERIFY(ae != NULL);
+
+	if (st->st_root_prefix != NULL) {
+		size_t len = strlen(st->st_root_prefix);
+
+		VERIFY(st->st_root_prefix[0] != '/');
+		VERIFY(st->st_root_prefix[len - 1] != '/');
+
+		if (strncmp(path, st->st_root_prefix, len) != 0) {
+			return (0);
+		}
+
+		relpath = path + len;
+		while (relpath[0] == '/') {
+			relpath++;
+		}
+
+		if (relpath[0] == '\0') {
+			goto skip;
+		}
+	}
 
 	archive_entry_clear(ae);
 
@@ -747,7 +833,7 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		 * the layering engine to remove the file when applying this
 		 * layer.
 		 */
-		whiteout_path(path, &whpath);
+		whiteout_path(relpath, &whpath);
 
 		archive_entry_set_pathname(ae, whpath);
 		archive_entry_set_filetype(ae, AE_IFREG);
@@ -760,7 +846,7 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		 * This is a regular file, directory, symbolic link, fifo or
 		 * socket.  Metadata is copied from the stat(2) structure.
 		 */
-		archive_entry_set_pathname(ae, path);
+		archive_entry_set_pathname(ae, relpath);
 		archive_entry_copy_stat(ae, statp);
 
 		if (S_ISREG(statp->st_mode)) {
@@ -770,7 +856,7 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 			 */
 			if ((datafd = openat(st->st_snapshot_fd, path,
 			    O_RDONLY | O_LARGEFILE | O_NOFOLLOW)) == -1) {
-				err(1, "open(%s)", path);
+				err(1, "reg file open(%s)", path);
 			}
 
 		} else if (S_ISLNK(statp->st_mode)) {
@@ -988,6 +1074,8 @@ usage(char *argv[], int rc)
 	    "   -t        Print details about the archive that would be created\n"
 	    "             without creating the archive itself\n"
 	    "   -f FILE   Output tarball name.  Without -f, output is to stdout.\n"
+	    "   -r SUBDIR Subdirectory within dataset to consider as the\n"
+	    "             root directory for the tarball\n"
 	    "\n",
 	    basename(argv[0]));
 
@@ -997,16 +1085,19 @@ usage(char *argv[], int rc)
 int
 main(int argc, char *argv[])
 {
-	char errbuf[512];
 	snaptar_t *st;
-	int rv;
 	boolean_t incremental;
 	walk_dir_func *walker;
 	int c;
 	boolean_t just_print = B_FALSE;
 	const char *output_file = NULL;
+	int posargc;
 
-	while ((c = getopt(argc, argv, ":htf:")) != -1) {
+	if (snaptar_alloc(&st) != 0) {
+		err(1, "snaptar_alloc");
+	}
+
+	while ((c = getopt(argc, argv, ":htf:r:")) != -1) {
 		switch (c) {
 		case 'h':
 			usage(argv, 0);
@@ -1018,6 +1109,16 @@ main(int argc, char *argv[])
 
 		case 'f':
 			output_file = optarg;
+			break;
+
+		case 'r':
+			if (snaptar_param_set(st, SNTR_P_ROOT_PREFIX,
+			    optarg) != 0) {
+				if (errno == EPROTO) {
+					usage(argv, 1);
+				}
+				err(1, "snaptar_param_set");
+			}
 			break;
 
 		case ':':
@@ -1032,14 +1133,18 @@ main(int argc, char *argv[])
 		}
 	}
 
-	if ((argc - optind) == 2) {
-		rv = snaptar_init(&st, errbuf, sizeof (errbuf), argv[optind],
-		    NULL, argv[optind + 1]);
+	posargc = argc - optind;
+	if (posargc == 2) {
 		incremental = B_FALSE;
 
-	} else if ((argc - optind) == 3) {
-		rv = snaptar_init(&st, errbuf, sizeof (errbuf), argv[optind],
-		    argv[optind + 1], argv[optind + 2]);
+	} else if (posargc == 3) {
+		if (snaptar_param_set(st, SNTR_P_SNAPSHOT_PARENT,
+		    argv[optind + 1]) != 0) {
+			if (errno == EPROTO) {
+				usage(argv, 1);
+			}
+			err(1, "snaptar_param_set");
+		}
 		incremental = B_TRUE;
 
 	} else {
@@ -1047,8 +1152,13 @@ main(int argc, char *argv[])
 		usage(argv, 1);
 	}
 
-	if (rv != 0) {
-		errx(1, "snaptar_init failure: %s\n", errbuf);
+	if (snaptar_param_set(st, SNTR_P_DATASET, argv[optind]) != 0 ||
+	    snaptar_param_set(st, SNTR_P_SNAPSHOT, argv[optind +
+	    (posargc - 1)]) != 0) {
+		if (errno == EPROTO) {
+			usage(argv, 1);
+		}
+		err(1, "snaptar_param_set");
 	}
 
 	if (get_zfs_mountpoint(st) != 0) {
