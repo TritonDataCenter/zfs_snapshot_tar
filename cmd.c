@@ -566,10 +566,31 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 	char typ = '?';
 	boolean_t special = B_FALSE;
 	boolean_t unknown = B_FALSE;
+	const char *relpath = path;
+
+	if (st->st_root_prefix != NULL) {
+		size_t len = strlen(st->st_root_prefix);
+
+		VERIFY(st->st_root_prefix[0] != '/');
+		VERIFY(st->st_root_prefix[len - 1] != '/');
+
+		if (strncmp(path, st->st_root_prefix, len) != 0) {
+			return (0);
+		}
+
+		relpath = path + len;
+		while (relpath[0] == '/') {
+			relpath++;
+		}
+
+		if (relpath[0] == '\0') {
+			goto skip;
+		}
+	}
 
 	if (stp == NULL) {
-		whiteout_path(path, &whpath);
-		path = whpath;
+		whiteout_path(relpath, &whpath);
+		relpath = whpath;
 		typ = '-';
 
 	} else if (S_ISREG(stp->st_mode)) {
@@ -608,7 +629,7 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 		unknown = B_TRUE;
 	}
 
-	fprintf(stderr, "%c %s", typ, path);
+	fprintf(stderr, "%c %s", typ, relpath);
 	if (sympath != NULL) {
 		fprintf(stderr, " -> %s", sympath);
 	}
@@ -626,6 +647,7 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 		errx(1, "found unknown file type; aborting");
 	}
 
+skip:
 	free(whpath);
 	return (0);
 }
