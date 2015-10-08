@@ -28,23 +28,31 @@ $(PROG): $(OBJ:%=obj/%) $(LIBS)
 	$(CTFCONVERT) -l $@ -o $@ $@
 	$(STRIP) -x $@
 
-obj/%.o: %.c | obj
+obj/%.o: %.c | stamp-0-libarchive obj
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-obj/%.o: deps/illumos/%.c | obj
+obj/%.o: deps/illumos/%.c | stamp-0-libarchive obj
 	$(CC) $(CFLAGS) -c -o $@ $^
 
-obj/%.o: deps/smartos/%.c | obj
+obj/%.o: deps/smartos/%.c | stamp-0-libarchive obj
 	$(CC) $(CFLAGS) -c -o $@ $^
 
 obj:
 	mkdir -p $@
 
-deps/libarchive/.libs/libarchive.a:
-	cd deps && $(MAKE) libarchive/.libs/libarchive.a
+deps/libarchive/.libs/libarchive.a: stamp-0-libarchive
 
+stamp-0-libarchive:
+	git submodule update --init
+	cd deps && $(MAKE) libarchive/.libs/libarchive.a
+	touch $@
+
+.PHONY: clean
 clean:
 	-rm -f $(OBJ:%=obj/%)
 	-rm -f $(PROG)
-	cd deps && $(MAKE) clean
 
+.PHONY: clobber
+clobber: clean
+	cd deps && $(MAKE) clean
+	-rm -f stamp-0-libarchive
