@@ -47,6 +47,7 @@ typedef enum snaptar_param {
 	SNTR_P_SNAPSHOT_PARENT,
 	SNTR_P_SNAPSHOT,
 	SNTR_P_DATASET,
+	SNTR_P_EXCLUDE_PATH,
 } snaptar_param_t;
 
 typedef struct {
@@ -56,6 +57,7 @@ typedef struct {
 	char *st_dataset;
 	char *st_snap0;
 	char *st_snap1;
+	strlist_t *st_exclude_paths;
 
 	char *st_mountpoint;
 
@@ -137,6 +139,10 @@ snaptar_alloc(snaptar_t **stp)
 	st->st_snapshot_fd = -1;
 	st->st_flags |= SNTR_F_IGNORE_SPECIALS;
 
+	if (strlist_alloc(&st->st_exclude_paths, 0) != 0) {
+		return (-1);
+	}
+
 	*stp = st;
 	return (0);
 }
@@ -157,6 +163,32 @@ copy_string(const char *src, char **dstp)
 	return (0);
 }
 
+static int
+copy_string_strlist(const char *src, strlist_t *sl)
+{
+	if (strlist_set_tail(sl, src) != 0) {
+		return (-1);
+	}
+
+	return (0);
+}
+
+static boolean_t
+is_valid_path_param(const char *desc, const char *val, size_t len)
+{
+	if (len == 0) {
+		warnx("%s must be a non-empty string", desc);
+		errno = EPROTO;
+		return (B_FALSE);
+	}
+	if (val[0] == '/' || val[len - 1] == '/') {
+		warnx("%s must not begin or end with a slash", desc);
+		errno = EPROTO;
+		return (B_FALSE);
+	}
+	return (B_TRUE);
+}
+
 int
 snaptar_param_set(snaptar_t *st, snaptar_param_t p, const char *val)
 {
@@ -164,15 +196,7 @@ snaptar_param_set(snaptar_t *st, snaptar_param_t p, const char *val)
 
 	switch (p) {
 	case SNTR_P_ROOT_PREFIX:
-		if (len == 0) {
-			warnx("root prefix must be a non-empty string");
-			errno = EPROTO;
-			return (-1);
-		}
-		if (val[0] == '/' || val[len - 1] == '/') {
-			warnx("root prefix must not begin or end with a "
-			    "slash");
-			errno = EPROTO;
+		if (!is_valid_path_param("root prefix", val, len)) {
 			return (-1);
 		}
 		return (copy_string(val, &st->st_root_prefix));
@@ -185,6 +209,12 @@ snaptar_param_set(snaptar_t *st, snaptar_param_t p, const char *val)
 
 	case SNTR_P_SNAPSHOT_PARENT:
 		return (copy_string(val, &st->st_snap0));
+
+	case SNTR_P_EXCLUDE_PATH:
+		if (!is_valid_path_param("exclude paths", val, len)) {
+			return (-1);
+		}
+		return (copy_string_strlist(val, st->st_exclude_paths));
 
 	default:
 		errno = EINVAL;
@@ -202,6 +232,7 @@ snaptar_fini(snaptar_t *st)
 	free(st->st_dataset);
 	free(st->st_snap0);
 	free(st->st_snap1);
+	strlist_free(st->st_exclude_paths);
 
 	VERIFY(st->st_archive == NULL);
 	VERIFY(st->st_archive_entry == NULL);
@@ -558,6 +589,51 @@ out:
 	return (ret);
 }
 
+static boolean_t
+path_is_excluded(snaptar_t *st, const char *path)
+{
+	size_t len = strlen(path);
+	unsigned epcnt = strlist_contig_count(st->st_exclude_paths);
+
+	for (unsigned i = 0; i < epcnt; i++) {
+		const char *xpath = strlist_get(st->st_exclude_paths, i);
+		size_t xlen = strlen(xpath);
+
+		if (len < xlen) {
+			/*
+			 * If the path to check is shorter than this exclude
+			 * path, it cannot be excluded.
+			 *   e.g. "a/b" cannot exclude "a".
+			 */
+			continue;
+		}
+
+		if (len == xlen) {
+			if (strcmp(xpath, path) == 0) {
+				/*
+				 * This exclude path matches the path to
+				 * check exactly.
+				 */
+				return (B_TRUE);
+			}
+			continue;
+		}
+
+		/*
+		 * This exclude path is shorter than the path to check.
+		 * Check if the path is a file or directory underneath
+		 * the exclude path:
+		 */
+		if (strncmp(xpath, path, xlen) == 0) {
+			if (path[xlen] == '/') {
+				return (B_TRUE);
+			}
+		}
+	}
+
+	return (B_FALSE);
+}
+
 static int
 print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
     const char *sympath)
@@ -586,6 +662,10 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 		if (relpath[0] == '\0') {
 			goto skip;
 		}
+	}
+
+	if (path_is_excluded(st, relpath)) {
+		goto skip;
 	}
 
 	if (stp == NULL) {
@@ -846,6 +926,10 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		}
 	}
 
+	if (path_is_excluded(st, relpath)) {
+		goto skip;
+	}
+
 	archive_entry_clear(ae);
 
 	if (statp == NULL) {
@@ -1098,6 +1182,9 @@ usage(char *argv[], int rc)
 	    "   -f FILE   Output tarball name.  Without -f, output is to stdout.\n"
 	    "   -r SUBDIR Subdirectory within dataset to consider as the\n"
 	    "             root directory for the tarball\n"
+	    "   -x PATH   Exclude a file or directory (and subdirectories)\n"
+	    "             from the archive.  Takes effect after -r, if that\n"
+	    "             option is used.\n"
 	    "\n",
 	    basename(argv[0]));
 
@@ -1119,7 +1206,7 @@ main(int argc, char *argv[])
 		err(1, "snaptar_alloc");
 	}
 
-	while ((c = getopt(argc, argv, ":htf:r:")) != -1) {
+	while ((c = getopt(argc, argv, ":htf:r:x:")) != -1) {
 		switch (c) {
 		case 'h':
 			usage(argv, 0);
@@ -1135,6 +1222,16 @@ main(int argc, char *argv[])
 
 		case 'r':
 			if (snaptar_param_set(st, SNTR_P_ROOT_PREFIX,
+			    optarg) != 0) {
+				if (errno == EPROTO) {
+					usage(argv, 1);
+				}
+				err(1, "snaptar_param_set");
+			}
+			break;
+
+		case 'x':
+			if (snaptar_param_set(st, SNTR_P_EXCLUDE_PATH,
 			    optarg) != 0) {
 				if (errno == EPROTO) {
 					usage(argv, 1);
