@@ -126,7 +126,7 @@ make_fullsnap(const char *dataset, const char *snap, char **fullsnap)
 }
 
 int
-snaptar_alloc(snaptar_t **stp)
+snaptar_alloc(snaptar_t **stp, char *errstr, size_t errlen)
 {
 	snaptar_t *st;
 
@@ -140,6 +140,10 @@ snaptar_alloc(snaptar_t **stp)
 	st->st_flags |= SNTR_F_IGNORE_SPECIALS;
 
 	if (strlist_alloc(&st->st_exclude_paths, 0) != 0) {
+		return (-1);
+	}
+
+	if (custr_alloc_buf(&st->st_errstr, errstr, errlen) != 0) {
 		return (-1);
 	}
 
@@ -233,6 +237,7 @@ snaptar_fini(snaptar_t *st)
 	free(st->st_snap0);
 	free(st->st_snap1);
 	strlist_free(st->st_exclude_paths);
+	custr_free(st->st_errstr);
 
 	VERIFY(st->st_archive == NULL);
 	VERIFY(st->st_archive_entry == NULL);
@@ -801,8 +806,8 @@ get_zfs_mountpoint_cb(const char *line, void *arg0)
 	 * Verify that we located a filesystem:
 	 */
 	if (!strlist_match(sl, 1, "filesystem")) {
-		custr_append(st->st_errstr, "found dataset was not a "
-		    "filesystem");
+		custr_append_printf(st->st_errstr, "found dataset (%s) was "
+		    "not a filesystem", st->st_dataset);
 		goto errout;
 	}
 
@@ -810,7 +815,8 @@ get_zfs_mountpoint_cb(const char *line, void *arg0)
 	 * Verify that the filesystem is mounted:
 	 */
 	if (!strlist_match(sl, 2, "yes")) {
-		custr_append(st->st_errstr, "filesystem is not mounted");
+		custr_append_printf(st->st_errstr, "filesystem (%s) is not "
+		    "mounted", st->st_dataset);
 		goto errout;
 	}
 
@@ -1201,8 +1207,10 @@ main(int argc, char *argv[])
 	boolean_t just_print = B_FALSE;
 	const char *output_file = NULL;
 	int posargc;
+	char errstr[2048] = { 0 };
+	int status = 10;
 
-	if (snaptar_alloc(&st) != 0) {
+	if (snaptar_alloc(&st, errstr, sizeof (errstr)) != 0) {
 		err(1, "snaptar_alloc");
 	}
 
@@ -1304,7 +1312,12 @@ main(int argc, char *argv[])
 		}
 	}
 
+	status = 0;
+
 out:
+	if (status != 0) {
+		fprintf(stderr, "ERROR: zfs_snapshot_tar: %s\n", errstr);
+	}
 	snaptar_fini(st);
-	return (0);
+	return (status);
 }
