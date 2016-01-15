@@ -939,6 +939,8 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 	archive_entry_clear(ae);
 
 	if (statp == NULL) {
+		time_t whenever;
+
 		/*
 		 * This file is absent from the target snapshot, so it has been
 		 * deleted.  Insert the empty "whiteout" file that instructs
@@ -950,6 +952,23 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		archive_entry_set_pathname(ae, whpath);
 		archive_entry_set_filetype(ae, AE_IFREG);
 		archive_entry_set_perm(ae, 0444);
+
+		/*
+		 * The default (i.e. unset) timestamp for a synthetic file is
+		 * zero.  GNU tar interprets this as an "implausibly" old
+		 * timestamp and, rather than do as it was instructed, fails
+		 * the extraction process.  We are already up to the waist in
+		 * fiction at this point, so conjuring a mythical timestamp for
+		 * our imaginary not-a-file will be a mere soiled drop in an
+		 * already squalid ocean.
+		 */
+		if ((whenever = time(NULL)) == -1) {
+			err(1, "could not read system time");
+		}
+		archive_entry_set_birthtime(ae, whenever, 0);
+		archive_entry_set_atime(ae, whenever, 0);
+		archive_entry_set_ctime(ae, whenever, 0);
+		archive_entry_set_mtime(ae, whenever, 0);
 
 	} else if (S_ISLNK(statp->st_mode) || S_ISDIR(statp->st_mode) ||
 	    S_ISREG(statp->st_mode) || S_ISFIFO(statp->st_mode) ||
