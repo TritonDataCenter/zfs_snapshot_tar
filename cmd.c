@@ -113,6 +113,12 @@ make_fullsnap(const char *dataset, const char *snap, char **fullsnap)
 	VERIFY(dataset != NULL);
 	VERIFY(snap != NULL);
 
+	if (strchr(snap, '@') != NULL) {
+		// It's already a full snapshot.
+		*fullsnap = strdup(snap);
+		return (0);
+	}
+
 	if (strchr(dataset, '@') != NULL || strchr(snap, '@') != NULL) {
 		errno = EINVAL;
 		return (-1);
