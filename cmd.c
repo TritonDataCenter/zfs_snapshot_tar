@@ -46,6 +46,8 @@ typedef enum snaptar_param {
 	SNTR_P_ROOT_PREFIX = 1,
 	SNTR_P_SNAPSHOT_PARENT,
 	SNTR_P_SNAPSHOT,
+	SNTR_P_EXPLICIT_PARENT,
+	SNTR_P_EXPLICIT,
 	SNTR_P_DATASET,
 	SNTR_P_EXCLUDE_PATH,
 } snaptar_param_t;
@@ -54,7 +56,8 @@ typedef struct {
 	snaptar_flags_t st_flags;
 
 	char *st_root_prefix;
-	char *st_dataset;
+	char *st_dataset0;
+	char *st_dataset1;
 	char *st_snap0;
 	char *st_snap1;
 	strlist_t *st_exclude_paths;
@@ -152,6 +155,41 @@ snaptar_alloc(snaptar_t **stp, char *errstr, size_t errlen)
 }
 
 static int
+copy_snapshot_string(const char *src, char **dsetp, char **snapp)
+{
+	char *dset = NULL, *snap = NULL;
+	const char *atp;
+
+	/*
+	 * Make sure we have a string that has an '@' character, denoting
+	 * a fully qualified "dataset@snapshot" name.  Ensure also that
+	 * the "dataset" and "snapshot" portions of the name are not
+	 * empty strings.
+	 */
+	if ((atp = strchr(src, '@')) == NULL || src == atp ||
+	    atp[1] == '\0' || strchr(atp + 1, '@') != NULL) {
+		errno = EINVAL;
+		return (-1);
+	}
+
+	/*
+	 * Split the string about the '@' separator:
+	 */
+	if ((dset = strndup(src, atp - src)) == NULL ||
+	    (snap = strdup(atp + 1)) == NULL) {
+		free(dset);
+		free(snap);
+		return (-1);
+	}
+
+	free(*dsetp);
+	free(*snapp);
+	*dsetp = dset;
+	*snapp = snap;
+	return (0);
+}
+
+static int
 copy_string(const char *src, char **dstp)
 {
 	char *dst;
@@ -205,8 +243,25 @@ snaptar_param_set(snaptar_t *st, snaptar_param_t p, const char *val)
 		}
 		return (copy_string(val, &st->st_root_prefix));
 
+	case SNTR_P_EXPLICIT:
+		return (copy_snapshot_string(val, &st->st_dataset1,
+		    &st->st_snap1));
+
+	case SNTR_P_EXPLICIT_PARENT:
+		return (copy_snapshot_string(val, &st->st_dataset0,
+		    &st->st_snap0));
+
 	case SNTR_P_DATASET:
-		return (copy_string(val, &st->st_dataset));
+		/*
+		 * Using the original argument format, one positional
+		 * argument was used for both the parent and the child
+		 * dataset.  To preserve this behaviour, we copy that
+		 * argument into both st_dataset0 and st_dataset1.
+		 */
+		if (copy_string(val, &st->st_dataset0) != 0) {
+			return (-1);
+		}
+		return (copy_string(val, &st->st_dataset1));
 
 	case SNTR_P_SNAPSHOT:
 		return (copy_string(val, &st->st_snap1));
@@ -233,7 +288,8 @@ snaptar_fini(snaptar_t *st)
 		VERIFY0(close(st->st_snapshot_fd));
 	}
 
-	free(st->st_dataset);
+	free(st->st_dataset0);
+	free(st->st_dataset1);
 	free(st->st_snap0);
 	free(st->st_snap1);
 	strlist_free(st->st_exclude_paths);
@@ -477,8 +533,8 @@ run_zfs_diff(snaptar_t *st)
 	char *fullsnap1 = NULL;
 	char errbuf[512];
 
-	VERIFY0(make_fullsnap(st->st_dataset, st->st_snap0, &fullsnap0));
-	VERIFY0(make_fullsnap(st->st_dataset, st->st_snap1, &fullsnap1));
+	VERIFY0(make_fullsnap(st->st_dataset0, st->st_snap0, &fullsnap0));
+	VERIFY0(make_fullsnap(st->st_dataset1, st->st_snap1, &fullsnap1));
 
 	char *const argv[] = {
 		CMD_ZFS,
@@ -797,7 +853,7 @@ get_zfs_mountpoint_cb(const char *line, void *arg0)
 	/*
 	 * Verify that the dataset name we found was the one we were expecting.
 	 */
-	if (!strlist_match(sl, 0, st->st_dataset)) {
+	if (!strlist_match(sl, 0, st->st_dataset1)) {
 		custr_append(st->st_errstr, "unexpected dataset in list");
 		goto errout;
 	}
@@ -807,7 +863,7 @@ get_zfs_mountpoint_cb(const char *line, void *arg0)
 	 */
 	if (!strlist_match(sl, 1, "filesystem")) {
 		custr_append_printf(st->st_errstr, "found dataset (%s) was "
-		    "not a filesystem", st->st_dataset);
+		    "not a filesystem", st->st_dataset1);
 		goto errout;
 	}
 
@@ -816,7 +872,7 @@ get_zfs_mountpoint_cb(const char *line, void *arg0)
 	 */
 	if (!strlist_match(sl, 2, "yes")) {
 		custr_append_printf(st->st_errstr, "filesystem (%s) is not "
-		    "mounted", st->st_dataset);
+		    "mounted", st->st_dataset1);
 		goto errout;
 	}
 
@@ -862,7 +918,7 @@ get_zfs_mountpoint(snaptar_t *st)
 		"-p",
 		"-o",
 		"name,type,mounted,mountpoint",
-		st->st_dataset,
+		st->st_dataset1,
 		NULL
 	};
 	char *const envp[] = {
@@ -1199,19 +1255,23 @@ usage(char *argv[], int rc)
 	FILE *out = rc == 0 ? stdout : stderr;
 
 	fprintf(out,
-	    "Usage: %s [OPTIONS] <dataset> [<parent_snapshot>] <snapshot>\n"
+	    "Usage:\n"
+	    "   %s [OPTIONS] <dataset> [<parent_snapshot>] <snapshot>\n"
+	    "   %s [OPTIONS] -e <parentdataset@snapshot> <dataset@snapshot>\n"
 	    "\n"
-	    "   -h        This help message\n"
-	    "   -t        Print details about the archive that would be created\n"
-	    "             without creating the archive itself\n"
-	    "   -f FILE   Output tarball name.  Without -f, output is to stdout.\n"
+	    "   -h        This help message.\n"
+	    "   -e        Use explicit \"dataset@snapshot\" arguments.\n"
+	    "   -t        Print details about the archive that would be\n"
+	    "             created without creating the archive itself.\n"
+	    "   -f FILE   Output tarball name.  Without -f, output is to\n"
+	    "             stdout.\n"
 	    "   -r SUBDIR Subdirectory within dataset to consider as the\n"
 	    "             root directory for the tarball\n"
 	    "   -x PATH   Exclude a file or directory (and subdirectories)\n"
 	    "             from the archive.  Takes effect after -r, if that\n"
 	    "             option is used.\n"
 	    "\n",
-	    basename(argv[0]));
+	    basename(argv[0]), basename(argv[0]));
 
 	exit(rc);
 }
@@ -1224,6 +1284,7 @@ main(int argc, char *argv[])
 	walk_dir_func *walker;
 	int c;
 	boolean_t just_print = B_FALSE;
+	boolean_t explicit_args = B_FALSE;
 	const char *output_file = NULL;
 	int posargc;
 	char errstr[2048] = { 0 };
@@ -1233,10 +1294,14 @@ main(int argc, char *argv[])
 		err(1, "snaptar_alloc");
 	}
 
-	while ((c = getopt(argc, argv, ":htf:r:x:")) != -1) {
+	while ((c = getopt(argc, argv, ":hetf:r:x:")) != -1) {
 		switch (c) {
 		case 'h':
 			usage(argv, 0);
+			break;
+
+		case 'e':
+			explicit_args = B_TRUE;
 			break;
 
 		case 't':
@@ -1280,6 +1345,34 @@ main(int argc, char *argv[])
 	}
 
 	posargc = argc - optind;
+
+	if (explicit_args) {
+		/*
+		 * The user has passed two fully qualified "dataset@snapshot"
+		 * style names.
+		 */
+		if (posargc != 2) {
+			warnx("Explicit mode requires 2 positional"
+			    " arguments.");
+			usage(argv, 1);
+		}
+
+		if (snaptar_param_set(st, SNTR_P_EXPLICIT_PARENT,
+		    argv[optind]) != 0 ||
+		    snaptar_param_set(st, SNTR_P_EXPLICIT,
+		    argv[optind + 1]) != 0) {
+			if (errno == EINVAL) {
+				warnx("invalid snapshot arguments");
+				usage(argv, 1);
+			} else {
+				err(1, "snaptar_param_set");
+			}
+		}
+
+		incremental = B_TRUE;
+		goto options_done;
+	}
+
 	if (posargc == 2) {
 		incremental = B_FALSE;
 
@@ -1307,6 +1400,7 @@ main(int argc, char *argv[])
 		err(1, "snaptar_param_set");
 	}
 
+options_done:
 	if (get_zfs_mountpoint(st) != 0) {
 		goto out;
 	}
