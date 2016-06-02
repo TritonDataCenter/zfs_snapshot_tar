@@ -29,7 +29,7 @@ CFLAGS =		-gdwarf-2 \
 			-Ideps/libarchive/libarchive \
 			-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
 
-LIBS =			deps/libarchive/.libs/libarchive.a
+LIBS =			-lumem deps/libarchive/.libs/libarchive.a
 
 
 $(PROG): $(OBJ:%=obj/%) $(LIBS)

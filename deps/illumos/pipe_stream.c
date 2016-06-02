@@ -69,6 +69,7 @@ pipe_stream_loop_fini(pipe_stream_loop_t *psl)
 	}
 
 	list_destroy(&psl->psl_pipes);
+	free(psl->psl_buf);
 	free(psl);
 
 	return (0);

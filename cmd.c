@@ -290,6 +290,21 @@ snaptar_param_set(snaptar_t *st, snaptar_param_t p, const char *val)
 	}
 }
 
+static void
+snaptar_free_diffent(diff_ent_t *dir, boolean_t free_this)
+{
+	diff_ent_t *next;
+
+	for (diff_ent_t *de = dir->de_child; de != NULL; de = next) {
+		next = de->de_sibling;
+		snaptar_free_diffent(de, B_TRUE);
+	}
+
+	free(dir->de_name);
+	if (free_this)
+		free(dir);
+}
+
 void
 snaptar_fini(snaptar_t *st)
 {
@@ -297,12 +312,14 @@ snaptar_fini(snaptar_t *st)
 		VERIFY0(close(st->st_snapshot_fd));
 	}
 
+	free(st->st_mountpoint);
 	free(st->st_dataset0);
 	free(st->st_dataset1);
 	free(st->st_snap0);
 	free(st->st_snap1);
 	strlist_free(st->st_exclude_paths);
 	custr_free(st->st_errstr);
+	snaptar_free_diffent(&st->st_root, B_FALSE);
 
 	VERIFY(st->st_archive == NULL);
 	VERIFY(st->st_archive_entry == NULL);
@@ -1441,5 +1458,7 @@ out:
 		fprintf(stderr, "ERROR: zfs_snapshot_tar: %s\n", errstr);
 	}
 	snaptar_fini(st);
+	if (getenv("ABORT_ON_EXIT") != NULL)
+		abort();
 	return (status);
 }
