@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <sys/param.h>
+#include <locale.h>
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -381,17 +382,119 @@ get_child(diff_ent_t *dir, const char *comp, diff_ent_t **child)
 	return (0);
 }
 
+/*
+ * Unprintable characters are emitted by "zfs diff" as an octal escape
+ * sequence.  We need to convert these back into the binary representation of
+ * the (potentially multibyte) string.
+ */
+static int
+unescape_zfs_diff_path(const char *input, custr_t *unescaped)
+{
+	custr_t *seq = NULL;
+	int ret = -1, e = 0;
+
+	if (custr_alloc(&seq) != 0) {
+		return (-1);
+	}
+
+	for (const char *p = input; ; p++) {
+		if (custr_len(seq) > 0) {
+			if (*p >= '0' && *p <= '7') {
+				/*
+				 * An octal digit.
+				 */
+				if (custr_appendc(seq, *p) != 0) {
+					e = errno;
+					goto out;
+				}
+			} else {
+				goto invalid;
+			}
+
+			VERIFY(custr_len(seq) < 5);
+			if (custr_len(seq) == 4) {
+				long val;
+
+				/*
+				 * This should be an entire escape sequence.
+				 * Attempt to parse the octal number, starting
+				 * at the character after the backslash.
+				 */
+				errno = 0;
+				if ((val = strtol(custr_cstr(seq) + 1,
+				    NULL, 8)) == 0 && errno != 0) {
+					goto invalid;
+				}
+
+				if (val < 0 || val > 255) {
+					goto invalid;
+				}
+
+				if (custr_appendc(unescaped,
+				    (char)(uint8_t)val) != 0) {
+					e = errno;
+					goto out;
+				}
+
+				custr_reset(seq);
+			}
+			continue;
+		}
+
+		if (*p == '\\') {
+			/*
+			 * A backslash character starts the escape sequence.
+			 */
+			if (custr_appendc(seq, *p) != 0) {
+				e = errno;
+				goto out;
+			}
+			continue;
+		}
+
+		if (*p == '\0') {
+			VERIFY(custr_len(seq) == 0);
+			ret = 0;
+			goto out;
+		}
+
+		if (custr_appendc(unescaped, *p) != 0) {
+			e = errno;
+			goto out;
+		}
+	}
+
+invalid:
+	errx(1, "invalid escape sequence from zfs diff: \"%s\"", input);
+
+out:
+	custr_free(seq);
+	errno = e;
+	return (ret);
+}
+
 static int
 record_path(snaptar_t *st, const char *path)
 {
 	strlist_t *sl = NULL;
 	custr_t *cu = NULL;
+	custr_t *unescaped = NULL;
 	diff_ent_t *de = &st->st_root;
-	const char *start = path;
+	const char *start;
 
-	if (strlist_alloc(&sl, 0) != 0 || custr_alloc(&cu) != 0) {
+	if (strlist_alloc(&sl, 0) != 0 || custr_alloc(&cu) != 0 ||
+	    custr_alloc(&unescaped) != 0) {
 		err(1, "strlist_alloc/custr_alloc");
 	}
+
+	/*
+	 * Convert any octal escape sequences back into their binary
+	 * representation:
+	 */
+	if (unescape_zfs_diff_path(path, unescaped) != 0) {
+		err(1, "unescape_zfs_diff_path");
+	}
+	start = custr_cstr(unescaped);
 
 	if (st->st_mountpoint != NULL) {
 		size_t len = strlen(st->st_mountpoint);
@@ -464,6 +567,7 @@ record_path(snaptar_t *st, const char *path)
 
 	strlist_free(sl);
 	custr_free(cu);
+	custr_free(unescaped);
 	return (0);
 }
 
@@ -1031,7 +1135,10 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		 */
 		whiteout_path(relpath, &whpath);
 
-		archive_entry_set_pathname(ae, whpath);
+		if (archive_entry_update_pathname_utf8(ae, whpath) != 1) {
+			errx(1, "invalid characters in filename: \"%s\"",
+			    whpath);
+		}
 		archive_entry_set_filetype(ae, AE_IFREG);
 		archive_entry_set_perm(ae, 0444);
 
@@ -1059,7 +1166,10 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		 * This is a regular file, directory, symbolic link, fifo or
 		 * socket.  Metadata is copied from the stat(2) structure.
 		 */
-		archive_entry_set_pathname(ae, relpath);
+		if (archive_entry_update_pathname_utf8(ae, relpath) != 1) {
+			errx(1, "invalid characters in filename: \"%s\"",
+			    relpath);
+		}
 		archive_entry_copy_stat(ae, statp);
 
 		if (S_ISREG(statp->st_mode)) {
@@ -1315,6 +1425,15 @@ main(int argc, char *argv[])
 	int posargc;
 	char errstr[2048] = { 0 };
 	int status = 10;
+
+	/*
+	 * We force ourselves to run in the en_US UTF-8 locale so that the OS
+	 * multibyte string and wide character facilities (used by libarchive)
+	 * are able to process UTF-8 sequences in filenames.
+	 */
+	if (setlocale(LC_ALL, "en_US.UTF-8") == NULL) {
+		err(1, "setlocale(en_US.UTF-8)");
+	}
 
 	if (snaptar_alloc(&st, errstr, sizeof (errstr)) != 0) {
 		err(1, "snaptar_alloc");
