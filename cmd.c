@@ -1085,6 +1085,31 @@ get_zfs_mountpoint(snaptar_t *st)
 	return (0);
 }
 
+static void
+make_tarball_entry_empty_file(struct archive_entry *ae)
+{
+	time_t whenever;
+
+	archive_entry_set_filetype(ae, AE_IFREG);
+	archive_entry_set_size(ae, 0);
+
+	/*
+	 * The default (i.e. unset) timestamp for a synthetic file is zero.
+	 * GNU tar interprets this as an "implausibly" old timestamp and,
+	 * rather than do as it was instructed, fails the extraction process.
+	 * We are already up to the waist in fiction at this point, so
+	 * conjuring a mythical timestamp for our imaginary not-a-file will be
+	 * a mere soiled drop in an already squalid ocean.
+	 */
+	if ((whenever = time(NULL)) == -1) {
+		err(1, "could not read system time");
+	}
+	archive_entry_set_birthtime(ae, whenever, 0);
+	archive_entry_set_atime(ae, whenever, 0);
+	archive_entry_set_ctime(ae, whenever, 0);
+	archive_entry_set_mtime(ae, whenever, 0);
+}
+
 static int
 make_tarball_entry(snaptar_t *st, const char *path, int level,
     struct stat *statp, const char *sympath)
@@ -1125,8 +1150,6 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 	archive_entry_clear(ae);
 
 	if (statp == NULL) {
-		time_t whenever;
-
 		/*
 		 * This file is absent from the target snapshot, so it has been
 		 * deleted.  Insert the empty "whiteout" file that instructs
@@ -1139,25 +1162,9 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 			errx(1, "invalid characters in filename: \"%s\"",
 			    whpath);
 		}
-		archive_entry_set_filetype(ae, AE_IFREG);
-		archive_entry_set_perm(ae, 0444);
 
-		/*
-		 * The default (i.e. unset) timestamp for a synthetic file is
-		 * zero.  GNU tar interprets this as an "implausibly" old
-		 * timestamp and, rather than do as it was instructed, fails
-		 * the extraction process.  We are already up to the waist in
-		 * fiction at this point, so conjuring a mythical timestamp for
-		 * our imaginary not-a-file will be a mere soiled drop in an
-		 * already squalid ocean.
-		 */
-		if ((whenever = time(NULL)) == -1) {
-			err(1, "could not read system time");
-		}
-		archive_entry_set_birthtime(ae, whenever, 0);
-		archive_entry_set_atime(ae, whenever, 0);
-		archive_entry_set_ctime(ae, whenever, 0);
-		archive_entry_set_mtime(ae, whenever, 0);
+		archive_entry_set_perm(ae, 0444);
+		make_tarball_entry_empty_file(ae);
 
 	} else if (S_ISLNK(statp->st_mode) || S_ISDIR(statp->st_mode) ||
 	    S_ISREG(statp->st_mode) || S_ISFIFO(statp->st_mode) ||
@@ -1187,6 +1194,15 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 			 * Specify the symbolic link target path.
 			 */
 			archive_entry_set_symlink(ae, sympath);
+
+		} else if (S_ISSOCK(statp->st_mode)) {
+			/*
+			 * A socket cannot be represented in a tar file.  For
+			 * compatibility with Docker, we create an empty file
+			 * in its place.  Ownership and permissions of this
+			 * empty file still come from the original socket.
+			 */
+			make_tarball_entry_empty_file(ae);
 		}
 
 	} else if (S_ISCHR(statp->st_mode) || S_ISBLK(statp->st_mode) ||
@@ -1219,7 +1235,8 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 	 * Write archive header:
 	 */
 	if (archive_write_header(a, ae) != ARCHIVE_OK) {
-		errx(1, "archive_write_header: %s", archive_error_string(a));
+		errx(1, "archive_write_header: path \"%s\": %s",
+		    archive_entry_pathname(ae), archive_error_string(a));
 	}
 
 	if (datafd != -1) {
@@ -1232,7 +1249,8 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 			ssize_t wsz;
 
 			if ((rsz = read(datafd, readbuf, rsz)) < 0) {
-				err(1, "read datafd");
+				err(1, "read datafd: path \"%s\"",
+				    archive_entry_pathname(ae));
 			}
 
 			if (rsz == 0) {
@@ -1241,7 +1259,8 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 
 			if ((wsz = archive_write_data(a, readbuf, rsz)) !=
 			    rsz) {
-				errx(1, "wsz (%d) != rsz (%d)", wsz, rsz);
+				errx(1, "wsz (%d) != rsz (%d): path \"%s\"",
+				    wsz, rsz, archive_entry_pathname(ae));
 			}
 		}
 
@@ -1249,8 +1268,8 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 	}
 
 	if (archive_write_finish_entry(a) != ARCHIVE_OK) {
-		errx(1, "archive_write_finish_entry: %s",
-		    archive_error_string(a));
+		errx(1, "archive_write_finish_entry: path \"%s\": %s",
+		    archive_entry_pathname(ae), archive_error_string(a));
 	}
 
 skip:
