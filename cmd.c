@@ -612,6 +612,43 @@ out:
 	return (error == 0 ? 0 : -1);
 }
 
+static void
+strlist_render(strlist_t *sl, char *out, size_t outsz)
+{
+	custr_t *cu;
+
+	out[0] = '\0';
+
+	if (custr_alloc_buf(&cu, out, outsz) != 0) {
+		return;
+	}
+
+	(void) custr_append(cu, "[");
+
+	for (unsigned i = 0; i < strlist_contig_count(sl); i++) {
+		if (i > 0) {
+			(void) custr_append(cu, ", ");
+		}
+
+		(void) custr_append_printf(cu, "\"%s\"", strlist_get(sl, i));
+	}
+
+	(void) custr_append(cu, "]");
+
+	custr_free(cu);
+}
+
+static void
+errx_unexpected_zfs_diff(strlist_t *sl)
+{
+	char sl_render[2048];
+
+	strlist_render(sl, sl_render, sizeof (sl_render));
+
+	errx(1, "unexpected zfs diff output (%s, %d): %s", strlist_get(sl, 0),
+	    strlist_contig_count(sl), sl_render);
+}
+
 void
 run_zfs_diff_cb(const char *line, void *arg0)
 {
@@ -633,8 +670,7 @@ run_zfs_diff_cb(const char *line, void *arg0)
 		 * Simple entry (removed/created/modified).
 		 */
 		if (strlist_contig_count(sl) != 3) {
-			errx(1, "unexpected count (wanted 3, got %d)",
-			    strlist_contig_count(sl));
+			errx_unexpected_zfs_diff(sl);
 		}
 		VERIFY0(record_path(st, strlist_get(sl, 2)));
 
@@ -643,14 +679,13 @@ run_zfs_diff_cb(const char *line, void *arg0)
 		 * Rename entry (mentions two path names).
 		 */
 		if (strlist_contig_count(sl) != 4) {
-			errx(1, "unexpected count (wanted 4, got %d)",
-			    strlist_contig_count(sl));
+			errx_unexpected_zfs_diff(sl);
 		}
 		VERIFY0(record_path(st, strlist_get(sl, 2)));
 		VERIFY0(record_path(st, strlist_get(sl, 3)));
 
 	} else {
-		errx(1, "unknown change type \"%s\"", strlist_get(sl, 0));
+		errx_unexpected_zfs_diff(sl);
 	}
 
 	strlist_free(sl);
@@ -934,7 +969,7 @@ run_readdir(snaptar_t *st, ent_enum_cb *cbfunc)
 	if (st->st_root_prefix != NULL) {
 		pfx = st->st_root_prefix;
 		parent = st->st_root_prefix;
-	};
+	}
 
 	if ((dirfd = openat(st->st_snapshot_fd, pfx, O_RDONLY |
 	    O_LARGEFILE)) == -1) {
