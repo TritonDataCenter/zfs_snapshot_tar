@@ -46,6 +46,12 @@ struct diff_ent {
 	diff_ent_t *de_parent;
 };
 
+typedef struct hardlink_ent {
+	ino_t hle_inode;
+	char *hle_path;
+	list_node_t hle_link;
+} hardlink_ent_t;
+
 typedef enum snaptar_flags {
 	SNTR_F_FAILED = 0x01,
 	SNTR_F_IGNORE_SPECIALS = 0x02,
@@ -76,16 +82,58 @@ typedef struct {
 
 	diff_ent_t st_root;
 
-	int st_snapshot_fd;
+	int st_snap0_fd;
+	int st_snap1_fd;
 	custr_t *st_errstr;
 
 	struct archive *st_archive;
 	struct archive_entry *st_archive_entry;
+
+	list_t st_hardlinks;
 } snaptar_t;
 
 typedef int ent_enum_cb(snaptar_t *, const char *, int, struct stat *,
     const char *);
 typedef int walk_dir_func(snaptar_t *, ent_enum_cb *);
+
+static int run_readdir_impl(snaptar_t *, int, int, const char *, ent_enum_cb *,
+    boolean_t);
+
+static hardlink_ent_t *
+hardlinks_lookup(snaptar_t *st, ino_t inode)
+{
+	hardlink_ent_t *hle;
+
+	for (hle = list_head(&st->st_hardlinks); hle != NULL;
+	    hle = list_next(&st->st_hardlinks, hle)) {
+		if (hle->hle_inode == inode) {
+			return (hle);
+		}
+	}
+
+	return (NULL);
+}
+
+static void
+hardlinks_add(snaptar_t *st, const char *path, ino_t inode)
+{
+	hardlink_ent_t *hle;
+
+	if ((hle = hardlinks_lookup(st, inode)) != NULL) {
+		errx(1, "duplicate hardlink entry %s, %s\n", path,
+		    hle->hle_path);
+	}
+
+	if ((hle = calloc(1, sizeof (*hle))) == NULL) {
+		err(1, "calloc");
+	}
+	if ((hle->hle_path = strdup(path)) == NULL) {
+		err(1, "strdup");
+	}
+	hle->hle_inode = inode;
+
+	list_insert_tail(&st->st_hardlinks, hle);
+}
 
 void
 whiteout_path(const char *path, char **outp)
@@ -149,7 +197,8 @@ snaptar_alloc(snaptar_t **stp, char *errstr, size_t errlen)
 		return (-1);
 	}
 
-	st->st_snapshot_fd = -1;
+	st->st_snap0_fd = -1;
+	st->st_snap1_fd = -1;
 	st->st_flags |= SNTR_F_IGNORE_SPECIALS;
 
 	if (strlist_alloc(&st->st_exclude_paths, 0) != 0) {
@@ -159,6 +208,9 @@ snaptar_alloc(snaptar_t **stp, char *errstr, size_t errlen)
 	if (custr_alloc_buf(&st->st_errstr, errstr, errlen) != 0) {
 		return (-1);
 	}
+
+	list_create(&st->st_hardlinks, sizeof (hardlink_ent_t),
+	    offsetof(hardlink_ent_t, hle_link));
 
 	*stp = st;
 	return (0);
@@ -208,9 +260,7 @@ copy_string(const char *src, char **dstp)
 		return (-1);
 	}
 
-	if (*dstp != NULL) {
-		free(*dstp);
-	}
+	free(*dstp);
 	*dstp = dst;
 	return (0);
 }
@@ -309,8 +359,19 @@ snaptar_free_diffent(diff_ent_t *dir, boolean_t free_this)
 void
 snaptar_fini(snaptar_t *st)
 {
-	if (st->st_snapshot_fd != -1) {
-		VERIFY0(close(st->st_snapshot_fd));
+	hardlink_ent_t *hle;
+
+	while ((hle = list_remove_tail(&st->st_hardlinks)) != NULL) {
+		free(hle->hle_path);
+		free(hle);
+	}
+	list_destroy(&st->st_hardlinks);
+
+	if (st->st_snap0_fd != -1) {
+		VERIFY0(close(st->st_snap0_fd));
+	}
+	if (st->st_snap1_fd != -1) {
+		VERIFY0(close(st->st_snap1_fd));
 	}
 
 	free(st->st_mountpoint);
@@ -473,8 +534,148 @@ out:
 	return (ret);
 }
 
+static void
+record_path_impl(snaptar_t *st, const char *path)
+{
+	custr_t *cu = NULL;
+	strlist_t *sl = NULL;
+
+	if (strlist_alloc(&sl, 0) != 0 || custr_alloc(&cu) != 0) {
+		err(1, "strlist_alloc/custr_alloc");
+	}
+
+	/*
+	 * Split a path into components, e.g.:
+	 *   a/b/c/d/  -->   "a", "b", "c", "d"
+	 *   /e/f///g  -->   "e", "f", "g"
+	 */
+	for (const char *p = path; ; p++) {
+		if (*p != '\0' && *p != '/') {
+			if (custr_appendc(cu, *p) != 0) {
+				err(1, "custr_appendc");
+			}
+			continue;
+		}
+
+		if (custr_len(cu) > 0) {
+			if (strlist_set_tail(sl, custr_cstr(cu)) != 0) {
+				err(1, "strlist_set_tail");
+			}
+			custr_reset(cu);
+		}
+
+		if (*p == '\0') {
+			break;
+		}
+	}
+
+	/*
+	 * Ensure this path, and all parent directories, exist in the
+	 * tree.
+	 */
+	diff_ent_t *de = &st->st_root;
+	for (unsigned i = 0; i < strlist_contig_count(sl); i++) {
+		if (get_child(de, strlist_get(sl, i), &de) != 0) {
+			err(1, "get_child");
+		}
+	}
+	VERIFY(de != NULL);
+
+	custr_free(cu);
+	strlist_free(sl);
+}
+
 static int
-record_path(snaptar_t *st, const char *path)
+check_links_cb(snaptar_t *st, const char *path, int level,
+    struct stat *statp, const char *sympath, int dirfd)
+{
+	struct stat sto;
+
+	if (!S_ISREG(statp->st_mode)) {
+		return (0);
+	}
+
+	if (fstatat(dirfd, path, &sto, AT_SYMLINK_NOFOLLOW) != 0) {
+		if (errno == ENOENT) {
+#if 0
+			fprintf(stderr, "\tDEBUG: %25s missing on other "
+			    "side!\n", path);
+#endif
+			record_path_impl(st, path);
+			return (0);
+		}
+
+		err(1, "fstatat(%s)", path);
+	}
+
+	if (statp->st_mode != sto.st_mode || statp->st_ino != sto.st_ino) {
+#if 0
+		fprintf(stderr, "\tDEBUG: %25s %lld vs %lld\n", path,
+		    statp->st_ino, sto.st_ino);
+#endif
+		record_path_impl(st, path);
+	}
+
+	return (0);
+}
+
+static int
+check_links_cb_old(snaptar_t *st, const char *path, int level,
+    struct stat *statp, const char *sympath)
+{
+	return (check_links_cb(st, path, level, statp, sympath,
+	    st->st_snap0_fd));
+}
+
+static int
+check_links_cb_new(snaptar_t *st, const char *path, int level,
+    struct stat *statp, const char *sympath)
+{
+	return (check_links_cb(st, path, level, statp, sympath,
+	    st->st_snap1_fd));
+}
+
+static void
+check_links(snaptar_t *st, const char *path)
+{
+	struct stat st0, st1;
+	int fd0 = -1, fd1 = -1;
+
+	if (fstatat(st->st_snap0_fd, path, &st0, AT_SYMLINK_NOFOLLOW) != 0 ||
+	    fstatat(st->st_snap1_fd, path, &st1, AT_SYMLINK_NOFOLLOW) != 0) {
+		err(1, "fstatat(%s)", path);
+	}
+
+	if (st0.st_ino != st1.st_ino || !S_ISDIR(st1.st_mode)) {
+		return;
+	}
+
+#if 0
+	fprintf(stderr, "DEBUG: %s: dir: inodes st0 %lld st1 %lld\n", path,
+	    st0.st_ino, st1.st_ino);
+#endif
+
+	if ((fd0 = openat(st->st_snap0_fd, path, O_RDONLY |
+	    O_LARGEFILE)) == -1) {
+		err(1, "openat(%s)", path);
+	}
+	if ((fd1 = openat(st->st_snap1_fd, path, O_RDONLY |
+	    O_LARGEFILE)) == -1) {
+		err(1, "openat(%s)", path);
+	}
+
+#if 0
+	fprintf(stderr, "    OLD:\n");
+#endif
+	run_readdir_impl(st, fd0, 1, path, check_links_cb_new, B_FALSE);
+#if 0
+	fprintf(stderr, "    NEW:\n");
+#endif
+	run_readdir_impl(st, fd1, 1, path, check_links_cb_old, B_FALSE);
+}
+
+static int
+record_path(snaptar_t *st, const char *path, boolean_t do_check_links)
 {
 	strlist_t *sl = NULL;
 	custr_t *cu = NULL;
@@ -527,6 +728,10 @@ record_path(snaptar_t *st, const char *path)
 		if (!match) {
 			return (0);
 		}
+	}
+
+	if (do_check_links) {
+		check_links(st, start);
 	}
 
 	/*
@@ -667,12 +872,20 @@ run_zfs_diff_cb(const char *line, void *arg0)
 	    strlist_match(sl, 0, "+") ||
 	    strlist_match(sl, 0, "M")) {
 		/*
-		 * Simple entry (removed/created/modified).
+		 * If this entry is marked "M", it could be a directory and
+		 * we may need to do a more precise check for link changes.
 		 */
-		if (strlist_contig_count(sl) != 3) {
+		boolean_t check_links = strlist_match(sl, 0, "M");
+
+		/*
+		 * Simple entry (removed/created/modified).  May have a link
+		 * count modification in an optional fourth column.
+		 */
+		if (strlist_contig_count(sl) != 3 &&
+		    strlist_contig_count(sl) != 4) {
 			errx_unexpected_zfs_diff(sl);
 		}
-		VERIFY0(record_path(st, strlist_get(sl, 2)));
+		VERIFY0(record_path(st, strlist_get(sl, 2), check_links));
 
 	} else if (strlist_match(sl, 0, "R")) {
 		/*
@@ -681,8 +894,8 @@ run_zfs_diff_cb(const char *line, void *arg0)
 		if (strlist_contig_count(sl) != 4) {
 			errx_unexpected_zfs_diff(sl);
 		}
-		VERIFY0(record_path(st, strlist_get(sl, 2)));
-		VERIFY0(record_path(st, strlist_get(sl, 3)));
+		VERIFY0(record_path(st, strlist_get(sl, 2), B_FALSE));
+		VERIFY0(record_path(st, strlist_get(sl, 3), B_FALSE));
 
 	} else {
 		errx_unexpected_zfs_diff(sl);
@@ -731,7 +944,7 @@ run_zfs_diff(snaptar_t *st)
 
 static int
 run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
-    ent_enum_cb *cbfunc)
+    ent_enum_cb *cbfunc, boolean_t recurse)
 {
 	DIR *dir;
 	struct dirent *d;
@@ -767,7 +980,7 @@ run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
 		if (S_ISLNK(stb.st_mode)) {
 			ssize_t sz;
 
-			if ((sz = readlinkat(st->st_snapshot_fd, path, buf,
+			if ((sz = readlinkat(st->st_snap1_fd, path, buf,
 			    sizeof (buf))) < 0) {
 				err(1, "readlinkat");
 			}
@@ -784,6 +997,10 @@ run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
 			goto out;
 		}
 
+		if (!recurse) {
+			goto next;
+		}
+
 		if (!S_ISDIR(stb.st_mode)) {
 			/*
 			 * This directory entry is not, itself, a directory; no
@@ -798,7 +1015,7 @@ run_readdir_impl(snaptar_t *st, int dirfd, int level, const char *parent,
 		}
 
 		if (run_readdir_impl(st, chdirfd, level + 1, path,
-		    cbfunc) != 0) {
+		    cbfunc, recurse) != 0) {
 			e = errno;
 			goto out;
 		}
@@ -869,6 +1086,7 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 	boolean_t special = B_FALSE;
 	boolean_t unknown = B_FALSE;
 	const char *relpath = path;
+	hardlink_ent_t *hle = NULL;
 
 	if (st->st_root_prefix != NULL) {
 		size_t len = strlen(st->st_root_prefix);
@@ -900,7 +1118,12 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 		typ = '-';
 
 	} else if (S_ISREG(stp->st_mode)) {
-		typ = 'F';
+		if ((hle = hardlinks_lookup(st, stp->st_ino)) == NULL) {
+			hardlinks_add(st, relpath, stp->st_ino);
+			typ = 'F';
+		} else {
+			typ = 'L';
+		}
 
 	} else if (S_ISDIR(stp->st_mode)) {
 		typ = 'D';
@@ -936,7 +1159,9 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 	}
 
 	fprintf(stderr, "%c %s", typ, relpath);
-	if (sympath != NULL) {
+	if (hle != NULL) {
+		fprintf(stderr, " -> %s", hle->hle_path);
+	} else if (sympath != NULL) {
 		fprintf(stderr, " -> %s", sympath);
 	}
 	if ((special && (st->st_flags & SNTR_F_IGNORE_SPECIALS)) ||
@@ -971,7 +1196,7 @@ run_readdir(snaptar_t *st, ent_enum_cb *cbfunc)
 		parent = st->st_root_prefix;
 	}
 
-	if ((dirfd = openat(st->st_snapshot_fd, pfx, O_RDONLY |
+	if ((dirfd = openat(st->st_snap1_fd, pfx, O_RDONLY |
 	    O_LARGEFILE)) == -1) {
 		err(1, "openat");
 	}
@@ -984,7 +1209,7 @@ run_readdir(snaptar_t *st, ent_enum_cb *cbfunc)
 		errx(1, "\"%s\" (within snapshot) is not a directory", pfx);
 	}
 
-	return (run_readdir_impl(st, dirfd, 1, parent, cbfunc));
+	return (run_readdir_impl(st, dirfd, 1, parent, cbfunc, B_TRUE));
 }
 
 void
@@ -1056,8 +1281,9 @@ out:
 }
 
 static int
-open_zfs_snap(snaptar_t *st, const char *snapname)
+open_zfs_snap(snaptar_t *st, const char *snapname, int *fdp)
 {
+	int fd;
 	char *path = NULL;
 
 	if (asprintf(&path, "%s/.zfs/snapshot/%s", st->st_mountpoint,
@@ -1065,11 +1291,12 @@ open_zfs_snap(snaptar_t *st, const char *snapname)
 		err(1, "asprintf");
 	}
 
-	if ((st->st_snapshot_fd = open(path, O_RDONLY | O_LARGEFILE)) == -1) {
+	if ((fd = open(path, O_RDONLY | O_LARGEFILE)) == -1) {
 		err(1, "open_zfs_snap: open(%s)", path);
 	}
 
 	free(path);
+	*fdp = fd;
 	return (0);
 }
 
@@ -1111,8 +1338,13 @@ get_zfs_mountpoint(snaptar_t *st)
 		return (-1);
 	}
 
-	if (open_zfs_snap(st, st->st_snap1) != 0) {
+	if (open_zfs_snap(st, st->st_snap1, &st->st_snap1_fd) != 0) {
 		custr_append(st->st_errstr, "could not open snapdir");
+		st->st_flags |= SNTR_F_FAILED;
+		return (-1);
+	}
+	if (open_zfs_snap(st, st->st_snap0, &st->st_snap0_fd) != 0) {
+		custr_append(st->st_errstr, "could not open parent snapdir");
 		st->st_flags |= SNTR_F_FAILED;
 		return (-1);
 	}
@@ -1215,12 +1447,22 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 		archive_entry_copy_stat(ae, statp);
 
 		if (S_ISREG(statp->st_mode)) {
+			hardlink_ent_t *hle;
+
+			if ((hle = hardlinks_lookup(st, statp->st_ino)) ==
+			    NULL) {
+				hardlinks_add(st, relpath, statp->st_ino);
+			} else {
+				archive_entry_set_hardlink(ae, hle->hle_path);
+				archive_entry_set_size(ae, 0);
+			}
+
 			/*
 			 * Open the regular file from the snapshot so that we
 			 * can read its contents into the archive.
 			 */
-			if ((datafd = openat(st->st_snapshot_fd, path,
-			    O_RDONLY | O_LARGEFILE | O_NOFOLLOW)) == -1) {
+			if (hle == NULL && (datafd = openat(st->st_snap1_fd,
+			    path, O_RDONLY | O_LARGEFILE | O_NOFOLLOW)) == -1) {
 				err(1, "reg file open(%s)", path);
 			}
 
@@ -1391,7 +1633,7 @@ walk_diff_tree_impl(snaptar_t *st, diff_ent_t *de, int level,
 		err(1, "asprintf");
 	}
 
-	if (fstatat(st->st_snapshot_fd, path, &stb, AT_SYMLINK_NOFOLLOW) != 0) {
+	if (fstatat(st->st_snap1_fd, path, &stb, AT_SYMLINK_NOFOLLOW) != 0) {
 		if (errno != ENOENT) {
 			err(1, "fstatat");
 		}
@@ -1406,7 +1648,7 @@ walk_diff_tree_impl(snaptar_t *st, diff_ent_t *de, int level,
 	if (S_ISLNK(stb.st_mode)) {
 		ssize_t sz;
 
-		if ((sz = readlinkat(st->st_snapshot_fd, path, buf,
+		if ((sz = readlinkat(st->st_snap1_fd, path, buf,
 		    sizeof (buf))) < 0) {
 			err(1, "readlinkat");
 		}
