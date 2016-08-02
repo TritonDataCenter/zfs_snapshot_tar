@@ -792,8 +792,8 @@ record_path_impl(snaptar_t *st, const char *path)
 	}
 	VERIFY3P(de, !=, NULL);
 
-	custr_free(cu);
 	strlist_free(sl);
+	custr_free(cu);
 	return (0);
 }
 
