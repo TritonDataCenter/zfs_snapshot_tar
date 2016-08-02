@@ -580,10 +580,6 @@ check_links_cb(snaptar_t *st, const char *path, int level,
 
 	if (fstatat(cla->cla_otherfd, path, &sto, AT_SYMLINK_NOFOLLOW) != 0) {
 		if (errno == ENOENT) {
-#if 0
-			fprintf(stderr, "\tDEBUG: %25s missing on other "
-			    "side!\n", path);
-#endif
 			record_path_impl(st, path);
 			return (0);
 		}
@@ -597,10 +593,6 @@ check_links_cb(snaptar_t *st, const char *path, int level,
 	}
 
 	if (statp->st_ino != sto.st_ino) {
-#if 0
-		fprintf(stderr, "\tDEBUG: %25s %lld vs %lld\n", path,
-		    statp->st_ino, sto.st_ino);
-#endif
 		record_path_impl(st, path);
 	}
 
@@ -638,11 +630,6 @@ check_links(snaptar_t *st, const char *path)
 		return;
 	}
 
-#if 0
-	fprintf(stderr, "DEBUG: %s: st0 %lld %lu st1 %lld %lu\n",
-	    path, st0.st_ino, st0.st_dev, st1.st_ino, st1.st_dev);
-#endif
-
 	if (st0.st_dev != st->st_snapshots[0].stss_device) {
 		errx(1, "dir %s in snap %s st_dev %lu outside of expected %lu",
 		    path, st->st_snapshots[0].stss_snapshot, st0.st_dev,
@@ -653,11 +640,6 @@ check_links(snaptar_t *st, const char *path)
 		    path, st->st_snapshots[1].stss_snapshot, st0.st_dev,
 		    st->st_snapshots[1].stss_device);
 	}
-
-#if 0
-	fprintf(stderr, "DEBUG: %s: dir: inodes st0 %lld st1 %lld\n", path,
-	    st0.st_ino, st1.st_ino);
-#endif
 
 	/*
 	 * Check each directory entry present in the parent snapshot against a
