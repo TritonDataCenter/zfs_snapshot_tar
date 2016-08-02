@@ -578,6 +578,15 @@ check_links_cb(snaptar_t *st, const char *path, int level,
 		return (0);
 	}
 
+	if (cla->cla_otherfd == -1) {
+		/*
+		 * If the other directory does not exist at all, then we
+		 * must check _every_ entry.
+		 */
+		record_path_impl(st, path);
+		return (0);
+	}
+
 	if (fstatat(cla->cla_otherfd, path, &sto, AT_SYMLINK_NOFOLLOW) != 0) {
 		if (errno == ENOENT) {
 			record_path_impl(st, path);
@@ -600,65 +609,69 @@ check_links_cb(snaptar_t *st, const char *path, int level,
 }
 
 static void
-check_links_open_fds(snaptar_t *st, const char *path, int *fd0p, int *fd1p)
+check_links_pre(snaptar_t *st, const char *path, boolean_t *exists,
+    struct stat *sta, int this, int that)
 {
-	if ((*fd0p = openat(st->st_snapshots[0].stss_fd, path, O_RDONLY |
+	if (fstatat(st->st_snapshots[this].stss_fd, path, &sta[this],
+	    AT_SYMLINK_NOFOLLOW) != 0) {
+		if (errno == ENOENT) {
+			exists[this] = B_FALSE;
+			return;
+		}
+		err(1, "fstatat(%s)", path);
+	}
+
+	if (!S_ISDIR(sta[this].st_mode)) {
+		exists[this] = B_FALSE;
+		return;
+	}
+
+	if (sta[this].st_dev != st->st_snapshots[this].stss_device) {
+		errx(1, "dir %s in snap %s st_dev %lu outside of expected %lu",
+		    path, st->st_snapshots[this].stss_snapshot,
+		    sta[this].st_dev, st->st_snapshots[this].stss_device);
+	}
+
+	exists[this] = B_TRUE;
+}
+
+static void
+check_links_post(snaptar_t *st, const char *path, boolean_t *exists,
+    struct stat *sta, int this, int that)
+{
+	int fd;
+	struct check_links_arg cla = { 0 };
+
+	if (!exists[this]) {
+		return;
+	}
+
+	if ((fd = openat(st->st_snapshots[this].stss_fd, path, O_RDONLY |
 	    O_LARGEFILE)) == -1) {
 		err(1, "openat(%s)", path);
 	}
-	if ((*fd1p = openat(st->st_snapshots[1].stss_fd, path, O_RDONLY |
-	    O_LARGEFILE)) == -1) {
-		err(1, "openat(%s)", path);
+
+	if (exists[that]) {
+		cla.cla_otherfd = st->st_snapshots[that].stss_fd;
+		cla.cla_otherdev = sta[that].st_dev;
+	} else {
+		cla.cla_otherfd = -1;
 	}
+
+	run_readdir_impl(st, fd, 1, path, check_links_cb, B_FALSE, &cla);
 }
 
 static void
 check_links(snaptar_t *st, const char *path)
 {
-	struct stat st0, st1;
-	int dirfd;
-	struct check_links_arg cla;
+	boolean_t exists[2];
+	struct stat sta[2];
 
-	if (fstatat(st->st_snapshots[0].stss_fd, path, &st0,
-	    AT_SYMLINK_NOFOLLOW) != 0 ||
-	    fstatat(st->st_snapshots[1].stss_fd, path, &st1,
-	    AT_SYMLINK_NOFOLLOW) != 0) {
-		err(1, "fstatat(%s)", path);
-	}
+	check_links_pre(st, path, exists, sta, 0, 1);
+	check_links_pre(st, path, exists, sta, 1, 0);
 
-	if (!S_ISDIR(st1.st_mode) || st0.st_ino != st1.st_ino) {
-		return;
-	}
-
-	if (st0.st_dev != st->st_snapshots[0].stss_device) {
-		errx(1, "dir %s in snap %s st_dev %lu outside of expected %lu",
-		    path, st->st_snapshots[0].stss_snapshot, st0.st_dev,
-		    st->st_snapshots[0].stss_device);
-	}
-	if (st1.st_dev != st->st_snapshots[1].stss_device) {
-		errx(1, "dir %s in snap %s st_dev %lu outside of expected %lu",
-		    path, st->st_snapshots[1].stss_snapshot, st0.st_dev,
-		    st->st_snapshots[1].stss_device);
-	}
-
-	/*
-	 * Check each directory entry present in the parent snapshot against a
-	 * potential entry in the target snapshot.  Note that this function
-	 * will close fd0 as a side effect, but we must close fd1 ourselves.
-	 */
-	check_links_open_fds(st, path, &dirfd, &cla.cla_otherfd);
-	cla.cla_otherdev = st0.st_dev;
-	run_readdir_impl(st, dirfd, 1, path, check_links_cb, B_FALSE, &cla);
-	VERIFY0(close(cla.cla_otherfd));
-
-	/*
-	 * Do the reverse for directory entries present in the child snapshot
-	 * against potential entries in the parent.
-	 */
-	check_links_open_fds(st, path, &cla.cla_otherfd, &dirfd);
-	cla.cla_otherdev = st1.st_dev;
-	run_readdir_impl(st, dirfd, 1, path, check_links_cb, B_FALSE, &cla);
-	VERIFY0(close(cla.cla_otherfd));
+	check_links_post(st, path, exists, sta, 0, 1);
+	check_links_post(st, path, exists, sta, 1, 0);
 }
 
 static int
@@ -711,6 +724,15 @@ record_path(snaptar_t *st, const char *path, boolean_t do_check_links)
 		free(x);
 
 		if (!match) {
+			/*
+			 * While we want to skip changes on the root
+			 * directory itself, we still need to check for
+			 * link changes in entries in the root directory.
+			 */
+			if (do_check_links && strcmp(start,
+			    st->st_root_prefix) == 0) {
+				check_links(st, start);
+			}
 			rv = 0;
 			goto done;
 		}
@@ -876,12 +898,6 @@ run_zfs_diff_cb(const char *line, void *arg0)
 	    strlist_match(sl, 0, "+") ||
 	    strlist_match(sl, 0, "M")) {
 		/*
-		 * If this entry is marked "M", it could be a directory and
-		 * we may need to do a more precise check for link changes.
-		 */
-		boolean_t check_links = strlist_match(sl, 0, "M");
-
-		/*
 		 * Simple entry (removed/created/modified).  May have a link
 		 * count modification in an optional fourth column.
 		 */
@@ -889,7 +905,7 @@ run_zfs_diff_cb(const char *line, void *arg0)
 		    strlist_contig_count(sl) != 4) {
 			errx_unexpected_zfs_diff(sl);
 		}
-		VERIFY0(record_path(st, strlist_get(sl, 2), check_links));
+		VERIFY0(record_path(st, strlist_get(sl, 2), B_TRUE));
 
 	} else if (strlist_match(sl, 0, "R")) {
 		/*
@@ -1126,7 +1142,7 @@ print_entry(snaptar_t *st, const char *path, int level, struct stat *stp,
 			hardlinks_add(st, relpath, stp);
 			typ = 'F';
 		} else {
-			typ = 'L';
+			typ = 'H';
 		}
 
 	} else if (S_ISDIR(stp->st_mode)) {
