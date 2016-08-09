@@ -644,7 +644,7 @@ check_links_post(snaptar_t *st, const char *path, boolean_t *exists,
     struct stat *sta, int this, int that)
 {
 	int fd;
-	struct check_links_arg cla = { 0 };
+	struct check_links_arg cla = { 0, 0 };
 
 	VERIFY3S(this, !=, that);
 	VERIFY(this == 0 || this == 1);
