@@ -8,6 +8,28 @@
  * Copyright 2016 Joyent, Inc.
  */
 
+#ifdef __sun__
+#include <sys/debug.h>
+#else
+#define	_GNU_SOURCE
+
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+#define	VERIFY(val)		assert((val) != 0)
+#define	VERIFY0(val)		assert((val) == 0)
+#define	VERIFY3P(a, op, b)	assert((uintptr_t)(a) op (uintptr_t)(b))
+#define	VERIFY3S(a, op, b)	assert((int64_t)(a) op (int64_t)(b))
+#define	VERIFY3U(a, op, b)	assert((uint64_t)(a) op (uint64_t)(b))
+
+#define	S_ISDOOR(d)		false
+#define	S_ISPORT(d)		false
+
+#define	B_TRUE true
+#define B_FALSE false
+#define boolean_t bool
+#endif
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -20,7 +42,6 @@
 #include <strings.h>
 #include <libgen.h>
 #include <sys/types.h>
-#include <sys/debug.h>
 #include <sys/list.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -1583,7 +1604,7 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 
 			if ((wsz = archive_write_data(a, readbuf, rsz)) !=
 			    rsz) {
-				errx(1, "wsz (%d) != rsz (%d): path \"%s\"",
+				errx(1, "wsz (%ld) != rsz (%ld): path \"%s\"",
 				    wsz, rsz, archive_entry_pathname(ae));
 			}
 		}
