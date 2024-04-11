@@ -1584,7 +1584,7 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 
 			if ((wsz = archive_write_data(a, readbuf, rsz)) !=
 			    rsz) {
-				errx(1, "wsz (%ld) != rsz (%ld): path \"%s\"",
+				errx(1, "wsz (%zd) != rsz (%zd): path \"%s\"",
 				    wsz, rsz, archive_entry_pathname(ae));
 			}
 		}
