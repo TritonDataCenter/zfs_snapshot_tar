@@ -6,6 +6,7 @@
 
 #
 # Copyright 2016 Joyent, Inc.
+# Copyright 2024 MNX Cloud, Inc.
 #
 
 TOOLS_PROTO =		/ws/plat/projects/illumos/usr/src/tools/proto/root_i386-nd
