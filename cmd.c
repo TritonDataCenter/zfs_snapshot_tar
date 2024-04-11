@@ -6,6 +6,7 @@
 
 /*
  * Copyright 2016 Joyent, Inc.
+ * Copyright 2024 MNX Cloud, Inc.
  */
 
 
@@ -1583,7 +1584,7 @@ make_tarball_entry(snaptar_t *st, const char *path, int level,
 
 			if ((wsz = archive_write_data(a, readbuf, rsz)) !=
 			    rsz) {
-				errx(1, "wsz (%d) != rsz (%d): path \"%s\"",
+				errx(1, "wsz (%ld) != rsz (%ld): path \"%s\"",
 				    wsz, rsz, archive_entry_pathname(ae));
 			}
 		}

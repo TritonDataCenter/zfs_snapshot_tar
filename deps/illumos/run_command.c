@@ -201,7 +201,7 @@ static int
 cb_data(const uint8_t *buf, size_t sz, void *arg0, void *arg1)
 {
 	cmd_t *cmd = arg0;
-	int fd = (int)arg1;
+	int fd = (long)arg1;
 	unsigned int i;
 
 	if (cmd->cmd_cancel) {
@@ -258,7 +258,7 @@ static void
 cb_eof(void *arg0, void *arg1)
 {
 	cmd_t *cmd = arg0;
-	int fd = (int)arg1;
+	int fd = (long)arg1;
 
 	if (cmd->cmd_cancel) {
 		return;
@@ -274,7 +274,7 @@ static void
 cb_error(int e, void *arg0, void *arg1)
 {
 	cmd_t *cmd = arg0;
-	int fd = (int)arg1;
+	int fd = (long)arg1;
 
 	if (cmd->cmd_cancel) {
 		return;
