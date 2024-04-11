@@ -21,7 +21,6 @@ PROG =			zfs_snapshot_tar
 OBJ =			cmd.o pipe_stream.o run_command.o custr.o list.o strlist.o avl.o
 
 CFLAGS =		-gdwarf-2 \
-			-lumem \
 			-fno-omit-frame-pointer \
 			-Wall -Wextra -Werror \
 			-Wno-unused-parameter \
@@ -31,11 +30,13 @@ CFLAGS =		-gdwarf-2 \
 			-Ideps/libarchive/libarchive \
 			-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
 
+LDFLAGS =		-lumem
+
 LIBS =			deps/libarchive/.libs/libarchive.a
 
 
 $(PROG): $(OBJ:%=obj/%) $(LIBS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	$(CTFCONVERT) -l $@ -o $@ $@
 	$(STRIP) -x $@
 
