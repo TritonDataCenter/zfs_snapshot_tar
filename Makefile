@@ -6,6 +6,7 @@
 
 #
 # Copyright 2016 Joyent, Inc.
+# Copyright 2024 MNX Cloud, Inc.
 #
 
 TOOLS_PROTO =		/ws/plat/projects/illumos/usr/src/tools/proto/root_i386-nd
@@ -29,11 +30,13 @@ CFLAGS =		-gdwarf-2 \
 			-Ideps/libarchive/libarchive \
 			-D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64
 
-LIBS =			-lumem deps/libarchive/.libs/libarchive.a
+LDFLAGS =		-lumem
+
+LIBS =			deps/libarchive/.libs/libarchive.a
 
 
 $(PROG): $(OBJ:%=obj/%) $(LIBS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 	$(CTFCONVERT) -l $@ -o $@ $@
 	$(STRIP) -x $@
 
